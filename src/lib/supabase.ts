@@ -9,6 +9,6 @@ export const initializeGuestAuth = async () => {
   const { data: { session } } = await supabase.auth.getSession();
   if (!session) {
     const { error } = await supabase.auth.signInAnonymously();
-    if (error) console.error('Error with guest login:', error.message);
+    if (error) console.error('Guest login failed:', error.message);
   }
 };
