@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { initializeGuestAuth, supabase } from './lib/supabase';
-import type { Task } from './types/task';
+import type { Task, Status } from './types/task';
 import { Board } from './components/Board';
 import { TaskModal } from './components/TaskModal';
 
@@ -15,7 +15,6 @@ export default function App() {
     fetchTasks();
   }, []);
 
-  // Fetch tasks from Supabase on mount
   const fetchTasks = async () => {
     await initializeGuestAuth();
     const { data, error } = await supabase
@@ -29,18 +28,14 @@ export default function App() {
     setLoading(false);
   };
 
-  // Handle Save (both Create and Update)
   const handleSaveTask = async (taskData: Partial<Task>) => {
     if (taskData.id) {
-      // Update existing task
       const { error } = await supabase
         .from('tasks')
         .update(taskData)
         .eq('id', taskData.id);
-
       if (!error) fetchTasks();
     } else {
-      // Create new task
       const { data: sessionData } = await supabase.auth.getSession();
       const userId = sessionData.session?.user.id;
       if (!userId) return;
@@ -48,12 +43,26 @@ export default function App() {
       const { error } = await supabase
         .from('tasks')
         .insert([{ ...taskData, user_id: userId }]);
-
       if (!error) fetchTasks();
     }
   };
 
-  // Handle Delete
+  const handleStatusChange = async (taskId: string, newStatus: Status) => {
+    setTasks((prev) =>
+      prev.map((t) => (t.id === taskId ? { ...t, status: newStatus } : t))
+    );
+
+    const { error } = await supabase
+      .from('tasks')
+      .update({ status: newStatus })
+      .eq('id', taskId);
+
+    if (error) {
+      console.error('Failed to update status:', error);
+      fetchTasks();
+    }
+  };
+
   const handleDeleteTask = async (id: string) => {
     const { error } = await supabase.from('tasks').delete().eq('id', id);
     if (!error) {
@@ -61,7 +70,6 @@ export default function App() {
     }
   };
 
-  // Filter tasks dynamically based on the search query
   const filteredTasks = tasks.filter(
     (t) =>
       t.title.toLowerCase().includes(search.toLowerCase()) ||
@@ -70,45 +78,50 @@ export default function App() {
 
   if (loading) {
     return (
-      <div className="min-h-screen bg-slate-950 flex items-center justify-center text-slate-500 text-sm font-medium">
-        Loading board...
+      <div className="min-h-screen bg-[#0c2340] flex items-center justify-center text-[#8c6f66] text-sm tracking-wide">
+        Loading workspace...
       </div>
     );
   }
 
   return (
-    <div className="min-h-screen bg-slate-950 text-slate-100 flex flex-col font-sans">
-      {/* Top Navigation Bar */}
-      <header className="border-b border-slate-800 bg-slate-900/50 backdrop-blur px-6 py-4 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
+    <div className="min-h-screen bg-[#0c2340] text-slate-100 flex flex-col font-sans selection:bg-[#4292c6] selection:text-slate-900">
+      {/* Header Bar using Classic Navy & Sky Blue */}
+      <header className="border-b border-[#103b6b] bg-[#0c2340]/90 backdrop-blur-md px-8 py-5 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 sticky top-0 z-30">
         <div>
-          <h1 className="text-xl font-bold bg-gradient-to-r from-indigo-400 to-cyan-400 bg-clip-text text-transparent">
-            Task Board
-          </h1>
-          <p className="text-xs text-slate-500">Next Play Sports Assessment</p>
+          <div className="flex items-center gap-3">
+            <div className="w-2.5 h-2.5 rounded-full bg-[#4292c6] shadow-sm shadow-[#4292c6]/50" />
+            <h1 className="text-xl font-bold tracking-tight text-white">
+              Task Workspace
+            </h1>
+          </div>
+          <p className="text-xs text-[#8c6f66] mt-0.5 pl-5 font-mono tracking-wider uppercase">
+            Next Play Sports Assessment
+          </p>
         </div>
 
-        <div className="flex items-center gap-3 w-full sm:w-auto">
+        <div className="flex items-center gap-4 w-full sm:w-auto">
           <input
             type="text"
             placeholder="Search tasks..."
             value={search}
             onChange={(e) => setSearch(e.target.value)}
-            className="bg-slate-800/80 border border-slate-700/60 rounded-xl px-3 py-1.5 text-xs text-slate-200 placeholder-slate-500 focus:outline-none focus:border-indigo-500 flex-1 sm:w-64"
+            className="bg-[#103b6b]/60 border border-[#4292c6]/30 rounded-xl px-4 py-2 text-xs text-white placeholder-[#8c6f66] focus:outline-none focus:border-[#4292c6] transition-all w-full sm:w-64"
           />
           <button
             onClick={() => {
               setEditingTask(null);
               setIsModalOpen(true);
             }}
-            className="bg-indigo-600 hover:bg-indigo-500 text-white font-medium text-xs px-4 py-2 rounded-xl transition-all shadow-sm shrink-0"
+            className="bg-[#4292c6] hover:bg-[#357ebd] text-[#0c2340] font-bold text-xs px-5 py-2.5 rounded-xl transition-all shadow-md shadow-[#4292c6]/20 shrink-0 tracking-wide"
           >
             + New Task
           </button>
         </div>
       </header>
 
-      {/* Main Kanban Board View */}
-      <main className="flex-1 p-6 overflow-x-auto">
+      {/* Main Board Container */}
+      <main className="flex-1 p-8 overflow-x-auto">
         <Board
           tasks={filteredTasks}
           onEditTask={(task) => {
@@ -116,10 +129,11 @@ export default function App() {
             setIsModalOpen(true);
           }}
           onDeleteTask={handleDeleteTask}
+          onStatusChange={handleStatusChange}
         />
       </main>
 
-      {/* Task Creation & Edit Modal */}
+      {/* Task Modal */}
       <TaskModal
         isOpen={isModalOpen}
         onClose={() => setIsModalOpen(false)}
