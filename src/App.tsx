@@ -92,12 +92,9 @@ export default function App() {
           <div className="flex items-center gap-2.5">
             <div className="w-2 h-2 rounded-full bg-blue-500" />
             <h1 className="text-lg font-semibold tracking-tight text-slate-100">
-              Task Workspace
+              My Personal Task Board
             </h1>
           </div>
-          <p className="text-xs text-slate-400 mt-0.5 pl-4 font-mono tracking-wider uppercase">
-            Next Play Sports Assessment
-          </p>
         </div>
 
         <div className="flex items-center gap-3 w-full sm:w-auto">
