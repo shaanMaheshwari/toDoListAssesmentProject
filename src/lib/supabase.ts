@@ -5,10 +5,14 @@ const supabaseAnonKey = import.meta.env.VITE_SUPABASE_ANON_KEY;
 
 export const supabase = createClient(supabaseUrl, supabaseAnonKey);
 
-export const initializeGuestAuth = async () => {
-  const { data: { session } } = await supabase.auth.getSession();
-  if (!session) {
-    const { error } = await supabase.auth.signInAnonymously();
-    if (error) console.error('Guest login failed:', error.message);
+export const getOrCreateGuestUser = async () => {
+  const { data: sessionData } = await supabase.auth.getSession();
+  
+  if (sessionData.session) {
+    return sessionData.session.user;
   }
+  
+  const { data, error } = await supabase.auth.signInAnonymously();
+  if (error) throw error;
+  return data.user;
 };
