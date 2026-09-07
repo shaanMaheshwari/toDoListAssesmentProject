@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { supabase, getOrCreateGuestUser } from '../lib/supabase';
-import type { Task, TaskStatus } from '../types/task';
+import type { Task, TaskPriority, TaskStatus } from '../types/task';
 
 interface CanvasSyncModalProps {
   isOpen: boolean;
@@ -133,13 +133,17 @@ export const CanvasSyncModal: React.FC<CanvasSyncModalProps> = ({
 
         const user = await getOrCreateGuestUser();
 
+        if (!user) {
+            throw new Error('Failed to retrieve or create a user session. Please try again.');
+        }
+
         // Mapping strictly to base task properties to avoid schema mismatch
         const newTasks = parsedEvents.map((evt) => ({
         user_id: user.id,
         title: evt.summary,
         description: evt.description,
         status: 'todo' as TaskStatus,
-        priority: 'normal',
+        priority: 'normal' as TaskPriority,
         due_date: new Date(evt.dueDateStr).toISOString(),
         }));
 

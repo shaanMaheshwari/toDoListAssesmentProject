@@ -146,6 +146,11 @@ export default function App() {
     if (!taskTitle.trim()) return;
 
     const user = await getOrCreateGuestUser();
+    if (!user) {
+      console.error('Cannot save task: Failed to resolve guest user session.');
+      return;
+    }
+
     const finalDueDate = taskDueDate || getLocalDateString();
 
     if (editingTask) {
