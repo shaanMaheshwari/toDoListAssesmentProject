@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { startOfWeek, addDays, isSameDay, parseISO } from 'date-fns';
+import { Trash2 } from 'lucide-react';
 import { supabase, getOrCreateGuestUser } from './lib/supabase';
 import type { Task, ViewMode, DateFilter, TaskStatus } from './types/task';
 import { WeeklyCalendar } from './components/WeeklyCalendar';
@@ -66,7 +67,6 @@ export default function App() {
       });
   }, []);
 
-  // Dynamically extract unique course codes from tasks
   const uniqueCourseCodes = Array.from(
     new Set(
       tasks
@@ -75,7 +75,6 @@ export default function App() {
     )
   ).sort();
 
-  // Persist position and status updates back to Supabase
   const persistTaskPositions = async (updatedTasks: Task[]) => {
     const updates = updatedTasks.map((t, index) => ({
       id: t.id,
@@ -122,22 +121,31 @@ export default function App() {
     await persistTaskPositions(targetColumnTasks);
   };
 
-  const handleToggleTaskComplete = async (e: React.MouseEvent, task: Task) => {
-    e.stopPropagation();
+  const handleToggleTaskComplete = async (taskId: string) => {
+    const targetTask = tasks.find((t) => t.id === taskId);
+    if (!targetTask) return;
 
-    const newStatus: TaskStatus = task.status === 'done' ? 'todo' : 'done';
+    const newStatus: TaskStatus = targetTask.status === 'done' ? 'todo' : 'done';
 
     setTasks((prev) =>
-      prev.map((t) => (t.id === task.id ? { ...t, status: newStatus } : t))
+      prev.map((t) => (t.id === taskId ? { ...t, status: newStatus } : t))
     );
 
     const { error } = await supabase
       .from('tasks')
       .update({ status: newStatus })
-      .eq('id', task.id);
+      .eq('id', taskId);
 
     if (error) {
       console.error('Failed to toggle task status:', error);
+    }
+  };
+
+  const handleDeleteTask = async (taskId: string) => {
+    setTasks((prev) => prev.filter((t) => t.id !== taskId));
+    await supabase.from('tasks').delete().eq('id', taskId);
+    if (editingTask?.id === taskId) {
+      closeModal();
     }
   };
 
@@ -146,10 +154,7 @@ export default function App() {
     if (!taskTitle.trim()) return;
 
     const user = await getOrCreateGuestUser();
-    if (!user) {
-      console.error('Cannot save task: Failed to resolve guest user session.');
-      return;
-    }
+    if (!user) return;
 
     const finalDueDate = taskDueDate || getLocalDateString();
 
@@ -211,12 +216,6 @@ export default function App() {
       }
     }
 
-    closeModal();
-  };
-
-  const handleDeleteTask = async (taskId: string) => {
-    setTasks((prev) => prev.filter((t) => t.id !== taskId));
-    await supabase.from('tasks').delete().eq('id', taskId);
     closeModal();
   };
 
@@ -317,7 +316,7 @@ export default function App() {
         </div>
       </header>
 
-      {/* Progress Bar Header */}
+      {/* Progress Bar Container */}
       <div className="bg-slate-900 border border-slate-800 rounded-xl p-4 mb-6 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
         <div className="flex items-center gap-3">
           <div className="h-10 w-10 rounded-lg bg-indigo-950/80 border border-indigo-800/50 flex items-center justify-center font-bold text-indigo-300 text-sm">
@@ -340,7 +339,6 @@ export default function App() {
       </div>
 
       <div className="flex flex-wrap items-center justify-between gap-4 mb-6">
-        {/* View Mode Toggle */}
         <div className="flex bg-slate-900 p-1 rounded-lg border border-slate-800">
           <button
             onClick={() => setViewMode('board')}
@@ -361,7 +359,6 @@ export default function App() {
         </div>
 
         <div className="flex items-center gap-3">
-          {/* Course Code Filter Dropdown */}
           <select
             value={selectedCourse}
             onChange={(e) => setSelectedCourse(e.target.value)}
@@ -375,7 +372,6 @@ export default function App() {
             ))}
           </select>
 
-          {/* Date Range Filters */}
           <div className="flex gap-1 bg-slate-900 p-1 rounded-lg border border-slate-800">
             {(['all', 'today', 'week', 'month'] as DateFilter[]).map((filter) => (
               <button
@@ -419,75 +415,100 @@ export default function App() {
                   </div>
 
                   <div className="flex-1 flex flex-col gap-3 overflow-y-auto">
-                    {statusTasks.map((task) => (
-                      <div
-                        key={task.id}
-                        draggable
-                        onDragStart={(e) => e.dataTransfer.setData('text/plain', task.id)}
-                        onDrop={(e) => {
-                          e.stopPropagation();
-                          handleDropOnColumn(e, status, task.id);
-                        }}
-                        onClick={() => openEditModal(task)}
-                        className={`bg-slate-800 border p-3.5 rounded-lg cursor-grab active:cursor-grabbing transition group shadow-sm ${
-                          task.status === 'done'
-                            ? 'border-slate-800 opacity-60'
-                            : 'border-slate-700/80 hover:border-indigo-500/60'
-                        }`}
-                      >
-                        <div className="flex items-start justify-between gap-2 mb-2">
-                          <button
-                            onClick={(e) => handleToggleTaskComplete(e, task)}
-                            className={`mt-0.5 h-4 w-4 rounded border flex items-center justify-center transition-colors ${
-                              task.status === 'done'
-                                ? 'bg-indigo-600 border-indigo-600 text-white'
-                                : 'border-slate-600 hover:border-indigo-400 bg-slate-900/50'
-                            }`}
-                          >
-                            {task.status === 'done' && (
-                              <svg className="w-2.5 h-2.5 fill-current" viewBox="0 0 20 20">
-                                <path d="M0 11l2-2 5 5L18 3l2 2L7 18z" />
-                              </svg>
-                            )}
-                          </button>
+                    {statusTasks.map((task) => {
+                      const isDone = task.status === 'done';
 
-                          {task.course_code && (
-                            <span className="text-[10px] font-bold px-1.5 py-0.5 bg-indigo-950 text-indigo-300 border border-indigo-800/50 rounded inline-block">
-                              {task.course_code}
-                            </span>
-                          )}
-                        </div>
-
-                        <h4
-                          className={`text-sm font-semibold transition-colors ${
-                            task.status === 'done'
-                              ? 'line-through text-slate-500'
-                              : 'text-slate-100 group-hover:text-indigo-300'
+                      return (
+                        <div
+                          key={task.id}
+                          draggable
+                          onDragStart={(e) => e.dataTransfer.setData('text/plain', task.id)}
+                          onDrop={(e) => {
+                            e.stopPropagation();
+                            handleDropOnColumn(e, status, task.id);
+                          }}
+                          onClick={() => openEditModal(task)}
+                          className={`bg-slate-800 border p-3.5 rounded-lg cursor-grab active:cursor-grabbing transition group shadow-sm relative ${
+                            isDone
+                              ? 'border-slate-800 opacity-60'
+                              : 'border-slate-700/80 hover:border-indigo-500/60'
                           }`}
                         >
-                          {task.title}
-                        </h4>
+                          <div className="flex items-start justify-between gap-2 mb-2">
+                            <div className="flex items-center gap-2">
+                              {/* Task Status Toggle */}
+                              <button
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  handleToggleTaskComplete(task.id);
+                                }}
+                                title={isDone ? 'Mark Incomplete' : 'Mark Complete'}
+                                className={`h-4 w-4 rounded border flex items-center justify-center transition-colors ${
+                                  isDone
+                                    ? 'bg-indigo-600 border-indigo-600 text-white'
+                                    : 'border-slate-600 hover:border-indigo-400 bg-slate-900/50'
+                                }`}
+                              >
+                                {isDone && (
+                                  <svg className="w-2.5 h-2.5 fill-current" viewBox="0 0 20 20">
+                                    <path d="M0 11l2-2 5 5L18 3l2 2L7 18z" />
+                                  </svg>
+                                )}
+                              </button>
+                            </div>
 
-                        {task.description && (
-                          <p className="text-xs text-slate-400 mt-1 line-clamp-2">{task.description}</p>
-                        )}
+                            <div className="flex items-center gap-1.5">
+                              {task.course_code && (
+                                <span className="text-[10px] font-bold px-1.5 py-0.5 bg-indigo-950 text-indigo-300 border border-indigo-800/50 rounded inline-block">
+                                  {task.course_code}
+                                </span>
+                              )}
 
-                        <div className="flex items-center justify-between mt-3 text-[11px] text-slate-400">
-                          <span
-                            className={`capitalize px-1.5 py-0.5 rounded text-[10px] font-semibold ${
-                              task.priority === 'high'
-                                ? 'bg-rose-950 text-rose-300 border border-rose-800/40'
-                                : task.priority === 'normal'
-                                ? 'bg-amber-950 text-amber-300 border border-amber-800/40'
-                                : 'bg-emerald-950 text-emerald-300 border border-emerald-800/40'
+                              {/* Direct Delete Trash Button */}
+                              <button
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  handleDeleteTask(task.id);
+                                }}
+                                title="Delete task"
+                                className="opacity-0 group-hover:opacity-100 p-1 text-slate-400 hover:text-rose-400 rounded transition-opacity"
+                              >
+                                <Trash2 size={13} />
+                              </button>
+                            </div>
+                          </div>
+
+                          <h4
+                            className={`text-sm font-semibold transition-colors ${
+                              isDone
+                                ? 'line-through text-slate-500'
+                                : 'text-slate-100 group-hover:text-indigo-300'
                             }`}
                           >
-                            {task.priority}
-                          </span>
-                          {task.due_date && <span>Due: {task.due_date}</span>}
+                            {task.title}
+                          </h4>
+
+                          {task.description && (
+                            <p className="text-xs text-slate-400 mt-1 line-clamp-2">{task.description}</p>
+                          )}
+
+                          <div className="flex items-center justify-between mt-3 text-[11px] text-slate-400">
+                            <span
+                              className={`capitalize px-1.5 py-0.5 rounded text-[10px] font-semibold ${
+                                task.priority === 'high'
+                                  ? 'bg-rose-950 text-rose-300 border border-rose-800/40'
+                                  : task.priority === 'normal'
+                                  ? 'bg-amber-950 text-amber-300 border border-amber-800/40'
+                                  : 'bg-emerald-950 text-emerald-300 border border-emerald-800/40'
+                              }`}
+                            >
+                              {task.priority}
+                            </span>
+                            {task.due_date && <span>Due: {task.due_date}</span>}
+                          </div>
                         </div>
-                      </div>
-                    ))}
+                      );
+                    })}
                   </div>
                 </div>
               );
@@ -496,10 +517,8 @@ export default function App() {
         ) : (
           <WeeklyCalendar
             tasks={filteredTasks}
-            onUpdateTaskDueDate={async (taskId, newDate) => {
-              setTasks((prev) => prev.map((t) => (t.id === taskId ? { ...t, due_date: newDate } : t)));
-              await supabase.from('tasks').update({ due_date: newDate }).eq('id', taskId);
-            }}
+            onToggleDone={handleToggleTaskComplete}
+            onDeleteTask={handleDeleteTask}
             onTaskClick={openEditModal}
             onDayClick={(dateStr) => openCreateModal(dateStr)}
           />

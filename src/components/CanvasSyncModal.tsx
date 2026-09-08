@@ -74,10 +74,25 @@ export const CanvasSyncModal: React.FC<CanvasSyncModalProps> = ({
       const summaryMatch = cleanBlock.match(/^SUMMARY.*?:(.*)$/m);
       const rawSummary = summaryMatch ? summaryMatch[1].trim() : 'Canvas Assignment';
 
-      // Parse Course Code from Canvas bracket format: "Assignment Name [CMSC330]"
-      const courseMatch = rawSummary.match(/\[(.*?)\]/);
-      const courseCode = courseMatch ? courseMatch[1] : null;
-      const cleanTitle = rawSummary.replace(/\[.*?\]/, '').trim();
+      // 1. Filter out Announcements
+      if (
+        !rawSummary ||
+        /^announcement:/i.test(rawSummary) ||
+        rawSummary.toLowerCase().includes('[announcement]')
+      ) {
+        continue;
+      }
+
+      // 2. Parse Course Code from Canvas bracket format (e.g. "[CMSC330]" or "CMSC330:")
+      let courseCode: string | null = null;
+      const courseMatch =
+        rawSummary.match(/\[(.*?)\]/) || rawSummary.match(/^([A-Za-z0-9]+):/);
+
+      if (courseMatch) {
+        courseCode = courseMatch[1].trim();
+      }
+
+      const cleanTitle = rawSummary.replace(/\[.*?\]/, '').replace(/^.*?:/, '').trim();
 
       // Extract DTEND or DTSTART for Due Date
       const dtEndMatch = cleanBlock.match(/^DTEND.*?:(\d{8}(?:T\d{6}Z?)?)/m);
@@ -98,6 +113,14 @@ export const CanvasSyncModal: React.FC<CanvasSyncModalProps> = ({
         ? descMatch[1].replace(/\\n/g, '\n').replace(/\\/g, '').trim()
         : 'Imported from Canvas iCal Feed';
 
+      // Fallback course code extraction from description if not in summary
+      if (!courseCode) {
+        const descCourseMatch = description.match(/\[(.*?)\]/);
+        if (descCourseMatch) {
+          courseCode = descCourseMatch[1].trim();
+        }
+      }
+
       events.push({
         summary: cleanTitle || rawSummary,
         description,
@@ -115,66 +138,68 @@ export const CanvasSyncModal: React.FC<CanvasSyncModalProps> = ({
     setErrorMsg(null);
 
     try {
-        let icsData = '';
+      let icsData = '';
 
-        if (importTab === 'url') {
+      if (importTab === 'url') {
         if (!icalUrl.trim()) throw new Error('Please enter a valid iCal URL.');
         icsData = await fetchIcalData(icalUrl);
-        } else {
+      } else {
         if (!rawIcsText.trim()) throw new Error('Please paste your iCal calendar content.');
         icsData = rawIcsText;
-        }
+      }
 
-        const parsedEvents = parseCanvasIcalText(icsData);
+      const parsedEvents = parseCanvasIcalText(icsData);
 
-        if (parsedEvents.length === 0) {
-        throw new Error('No VEVENT blocks found in the pasted calendar text.');
-        }
+      if (parsedEvents.length === 0) {
+        throw new Error('No valid assignment events found in the pasted calendar text.');
+      }
 
-        const user = await getOrCreateGuestUser();
+      const user = await getOrCreateGuestUser();
 
-        if (!user) {
-            throw new Error('Failed to retrieve or create a user session. Please try again.');
-        }
+      if (!user) {
+        throw new Error('Failed to retrieve or create a user session. Please try again.');
+      }
 
-        // Mapping strictly to base task properties to avoid schema mismatch
-        const newTasks = parsedEvents.map((evt) => ({
+      // Mapping strictly to base task properties, including course_code
+      const newTasks = parsedEvents.map((evt, idx) => ({
         user_id: user.id,
         title: evt.summary,
         description: evt.description,
         status: 'todo' as TaskStatus,
         priority: 'normal' as TaskPriority,
-        due_date: new Date(evt.dueDateStr).toISOString(),
-        }));
+        due_date: evt.dueDateStr,
+        course_code: evt.courseCode,
+        position: idx,
+      }));
 
-        const { data, error } = await supabase
+      const { data, error } = await supabase
         .from('tasks')
         .insert(newTasks)
         .select();
 
-        if (error) {
+      if (error) {
         console.error('Supabase Insert Error:', error);
         throw new Error(`Database Error: ${error.message} (${error.details || error.hint || 'Check table schema'})`);
-        }
+      }
 
-        if (data) {
+      if (data) {
         onTasksImported(data as Task[]);
         onClose();
-        }
+      }
     } catch (err: unknown) {
-        console.error('Canvas iCal Sync Full Error Object:', err);
+      console.error('Canvas iCal Sync Full Error Object:', err);
 
-        if (typeof err === 'object' && err !== null && 'message' in err) {
-            setErrorMsg((err as { message: string }).message);
-        } else if (err instanceof Error) {
-            setErrorMsg(err.message);
-        } else {
-            setErrorMsg(JSON.stringify(err));
-        }
+      if (typeof err === 'object' && err !== null && 'message' in err) {
+        setErrorMsg((err as { message: string }).message);
+      } else if (err instanceof Error) {
+        setErrorMsg(err.message);
+      } else {
+        setErrorMsg(JSON.stringify(err));
+      }
     } finally {
-        setSyncing(false);
+      setSyncing(false);
     }
-    };
+  };
 
   return (
     <div className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center p-4 z-50">
