@@ -32,7 +32,6 @@ export const WeeklyCalendar: React.FC<WeeklyCalendarProps> = ({
   const handleNextWeek = () => setCurrentWeek(addWeeks(currentWeek, 1));
   const handleToday = () => setCurrentWeek(new Date());
 
-  // Week starting on Sunday to match standard calendar views
   const startDate = startOfWeek(currentWeek, { weekStartsOn: 0 });
   const endDate = endOfWeek(currentWeek, { weekStartsOn: 0 });
   const days = eachDayOfInterval({ start: startDate, end: endDate });
@@ -109,7 +108,7 @@ export const WeeklyCalendar: React.FC<WeeklyCalendarProps> = ({
                         e.stopPropagation();
                         onTaskClick(task);
                       }}
-                      className={`group relative p-2.5 rounded-lg border text-xs transition-all flex flex-col gap-1 cursor-pointer ${
+                      className={`group relative p-2.5 rounded-lg border text-xs transition-all flex flex-col gap-1.5 cursor-pointer ${
                         isDone
                           ? 'bg-slate-900/60 border-slate-800/60 text-slate-500 opacity-60'
                           : 'bg-[#1b2336] border-slate-700/50 text-slate-200 hover:border-indigo-500/60 shadow-sm'
@@ -120,7 +119,7 @@ export const WeeklyCalendar: React.FC<WeeklyCalendarProps> = ({
                           {task.title}
                         </span>
                         
-                        <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+                        <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity shrink-0">
                           <button
                             type="button"
                             onClick={(e) => {
@@ -146,10 +145,13 @@ export const WeeklyCalendar: React.FC<WeeklyCalendarProps> = ({
                         </div>
                       </div>
 
+                      {/* Course Badge */}
                       {task.course_code && (
-                        <span className="text-[10px] font-semibold text-indigo-400/90 uppercase tracking-wide">
-                          {task.course_code}
-                        </span>
+                        <div className="flex items-center">
+                          <span className="inline-block px-1.5 py-0.5 text-[10px] font-bold text-indigo-300 bg-indigo-950/80 border border-indigo-800/50 rounded uppercase tracking-wider">
+                            {task.course_code}
+                          </span>
+                        </div>
                       )}
                     </div>
                   );

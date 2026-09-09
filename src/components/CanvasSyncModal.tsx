@@ -84,15 +84,21 @@ export const CanvasSyncModal: React.FC<CanvasSyncModalProps> = ({
       }
 
       // 2. Parse Course Code from Canvas bracket format (e.g. "[CMSC330]" or "CMSC330:")
-      let courseCode: string | null = null;
-      const courseMatch =
-        rawSummary.match(/\[(.*?)\]/) || rawSummary.match(/^([A-Za-z0-9]+):/);
+      // 1. Extract course code ONLY if it matches standard course code patterns (e.g., CMSC330 or BMGT221)
+    let courseCode: string | null = null;
+    const courseMatch = 
+        rawSummary.match(/\[(.*?)\]/) || 
+        rawSummary.match(/^([A-Za-z]{2,4}\s*\d{3}[A-Za-z]?):/); // Matches patterns like CMSC330: or BMGT 221:
 
-      if (courseMatch) {
+    if (courseMatch) {
         courseCode = courseMatch[1].trim();
-      }
+    }
 
-      const cleanTitle = rawSummary.replace(/\[.*?\]/, '').replace(/^.*?:/, '').trim();
+    // 2. Clean ONLY bracketed tags and leading course codes (preserving "Chap 05:", "HW 1:", etc.)
+    const cleanTitle = rawSummary
+        .replace(/\[.*?\]/g, '') // Remove [COURSE] brackets
+        .replace(/^([A-Za-z]{2,4}\s*\d{3}[A-Za-z]?):\s*/, '') // Remove ONLY leading course prefix (e.g. CMSC330:)
+        .trim();
 
       // Extract DTEND or DTSTART for Due Date
       const dtEndMatch = cleanBlock.match(/^DTEND.*?:(\d{8}(?:T\d{6}Z?)?)/m);
