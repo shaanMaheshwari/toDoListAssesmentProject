@@ -63,10 +63,10 @@ export default function App() {
       const user = await getOrCreateGuestUser();
       if (!user) return;
 
-      // 1. Resolve raw URL from localStorage or Database into a single local variable
-      let rawUrl: string | null = localStorage.getItem('canvas_ical_url');
+      // Check localStorage or Database for saved iCal Feed URL
+      let savedUrl: string | null = localStorage.getItem('canvas_ical_url');
 
-      if (!rawUrl) {
+      if (!savedUrl) {
         const { data: profile } = await supabase
           .from('profiles')
           .select('canvas_ical_url')
@@ -74,23 +74,20 @@ export default function App() {
           .maybeSingle();
 
         if (profile?.canvas_ical_url) {
-          rawUrl = profile.canvas_ical_url;
-          localStorage.setItem('canvas_ical_url', rawUrl);
+          savedUrl = profile.canvas_ical_url;
+          localStorage.setItem('canvas_ical_url', savedUrl);
         }
       }
 
-      // 2. Early exit guard
-      if (!rawUrl) return;
+      if (!savedUrl) return;
 
-      // 3. Bind to an immutable const string so TypeScript guarantees non-nullability
-      const validUrl: string = rawUrl.trim();
-      if (!validUrl) return;
+      let formattedUrl = savedUrl.trim();
+      if (formattedUrl.startsWith('webcal://')) {
+        formattedUrl = formattedUrl.replace('webcal://', 'https://');
+      }
 
-      const formattedUrl: string = validUrl.startsWith('webcal://')
-        ? validUrl.replace('webcal://', 'https://')
-        : validUrl;
-
-      const proxyUrl = `https://corsproxy.io/?${encodeURIComponent(formattedUrl)}`;
+      // Using (formattedUrl || '') guarantees TypeScript receives a strict string argument
+      const proxyUrl = `https://corsproxy.io/?${encodeURIComponent(formattedUrl || '')}`;
       const res = await fetch(proxyUrl);
       if (!res.ok) return;
 
