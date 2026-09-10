@@ -75,7 +75,7 @@ export default function App() {
 
         if (profile?.canvas_ical_url) {
           savedUrl = profile.canvas_ical_url;
-          localStorage.setItem('canvas_ical_url', savedUrl);
+          localStorage.setItem('canvas_ical_url', savedUrl || '');
         }
       }
 
