@@ -79,14 +79,15 @@ export default function App() {
         }
       }
 
-      // Early return guard: guarantees savedUrl is a valid non-empty string below this line
+      // Hard guard check: ensures savedUrl is strictly a non-empty string
       if (!savedUrl || typeof savedUrl !== 'string') return;
 
-      // Create a fresh string variable explicitly typed as string
-      const rawUrl: string = savedUrl.trim();
-      const formattedUrl: string = rawUrl.startsWith('webcal://')
-        ? rawUrl.replace('webcal://', 'https://')
-        : rawUrl;
+      // Force strict string resolution to eliminate TS2345
+      const urlString: string = savedUrl;
+      let formattedUrl: string = urlString.trim();
+      if (formattedUrl.startsWith('webcal://')) {
+        formattedUrl = formattedUrl.replace('webcal://', 'https://');
+      }
 
       const proxyUrl = `https://corsproxy.io/?${encodeURIComponent(formattedUrl)}`;
       const res = await fetch(proxyUrl);
