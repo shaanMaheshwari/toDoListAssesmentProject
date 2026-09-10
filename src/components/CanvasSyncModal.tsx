@@ -9,6 +9,7 @@ interface CanvasSyncModalProps {
 }
 
 interface ParsedCanvasEvent {
+  canvasEventId: string | null;
   summary: string;
   description: string;
   dueDateStr: string;
@@ -70,6 +71,10 @@ export const CanvasSyncModal: React.FC<CanvasSyncModalProps> = ({
     for (const veventBlock of vevents) {
       const cleanBlock = veventBlock.split(/END:VEVENT/i)[0];
 
+      // Extract UID for deduplication
+      const uidMatch = cleanBlock.match(/^UID:(.*)$/m);
+      const canvasEventId = uidMatch ? uidMatch[1].trim() : null;
+
       // Extract SUMMARY
       const summaryMatch = cleanBlock.match(/^SUMMARY.*?:(.*)$/m);
       const rawSummary = summaryMatch ? summaryMatch[1].trim() : 'Canvas Assignment';
@@ -83,19 +88,18 @@ export const CanvasSyncModal: React.FC<CanvasSyncModalProps> = ({
         continue;
       }
 
-      // 2. Parse Course Code from Canvas bracket format (e.g. "[CMSC330]" or "CMSC330:")
-      // 1. Extract course code ONLY if it matches standard course code patterns (e.g., CMSC330 or BMGT221)
-    let courseCode: string | null = null;
-    const courseMatch = 
+      // 2. Parse Course Code matching patterns like CMSC330: or BMGT 221:
+      let courseCode: string | null = null;
+      const courseMatch = 
         rawSummary.match(/\[(.*?)\]/) || 
-        rawSummary.match(/^([A-Za-z]{2,4}\s*\d{3}[A-Za-z]?):/); // Matches patterns like CMSC330: or BMGT 221:
+        rawSummary.match(/^([A-Za-z]{2,4}\s*\d{3}[A-Za-z]?):/);
 
-    if (courseMatch) {
+      if (courseMatch) {
         courseCode = courseMatch[1].trim();
-    }
+      }
 
-    // 2. Clean ONLY bracketed tags and leading course codes (preserving "Chap 05:", "HW 1:", etc.)
-    const cleanTitle = rawSummary
+      // 3. Clean ONLY bracketed tags and leading course codes (preserving "Chap 05:", "HW 1:", etc.)
+      const cleanTitle = rawSummary
         .replace(/\[.*?\]/g, '') // Remove [COURSE] brackets
         .replace(/^([A-Za-z]{2,4}\s*\d{3}[A-Za-z]?):\s*/, '') // Remove ONLY leading course prefix (e.g. CMSC330:)
         .trim();
@@ -128,6 +132,7 @@ export const CanvasSyncModal: React.FC<CanvasSyncModalProps> = ({
       }
 
       events.push({
+        canvasEventId,
         summary: cleanTitle || rawSummary,
         description,
         dueDateStr,
@@ -166,7 +171,7 @@ export const CanvasSyncModal: React.FC<CanvasSyncModalProps> = ({
         throw new Error('Failed to retrieve or create a user session. Please try again.');
       }
 
-      // Mapping strictly to base task properties, including course_code
+      // Map task payloads including canvas_event_id for unique upserting
       const newTasks = parsedEvents.map((evt, idx) => ({
         user_id: user.id,
         title: evt.summary,
@@ -175,17 +180,28 @@ export const CanvasSyncModal: React.FC<CanvasSyncModalProps> = ({
         priority: 'normal' as TaskPriority,
         due_date: evt.dueDateStr,
         course_code: evt.courseCode,
+        canvas_event_id: evt.canvasEventId,
         position: idx,
       }));
 
+      // Upsert tasks based on canvas_event_id to update existing tasks without duplicating
       const { data, error } = await supabase
         .from('tasks')
-        .insert(newTasks)
+        .upsert(newTasks, { onConflict: 'canvas_event_id' })
         .select();
 
       if (error) {
-        console.error('Supabase Insert Error:', error);
+        console.error('Supabase Upsert Error:', error);
         throw new Error(`Database Error: ${error.message} (${error.details || error.hint || 'Check table schema'})`);
+      }
+
+      // If imported via URL, save URL to user profile & localStorage for automatic future syncs
+      if (importTab === 'url' && icalUrl.trim()) {
+        const trimmedUrl = icalUrl.trim();
+        localStorage.setItem('canvas_ical_url', trimmedUrl);
+        await supabase
+          .from('profiles')
+          .upsert({ id: user.id, canvas_ical_url: trimmedUrl, updated_at: new Date().toISOString() });
       }
 
       if (data) {

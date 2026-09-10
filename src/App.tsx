@@ -1,8 +1,8 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { startOfWeek, addDays, isSameDay, parseISO } from 'date-fns';
-import { Trash2 } from 'lucide-react';
+import { Trash2, RefreshCw } from 'lucide-react';
 import { supabase, getOrCreateGuestUser } from './lib/supabase';
-import type { Task, ViewMode, DateFilter, TaskStatus } from './types/task';
+import type { Task, ViewMode, DateFilter, TaskStatus, TaskPriority } from './types/task';
 import { WeeklyCalendar } from './components/WeeklyCalendar';
 import { CanvasSyncModal } from './components/CanvasSyncModal';
 
@@ -23,6 +23,7 @@ const getLocalDateString = (date: Date = new Date()) => {
 export default function App() {
   const [tasks, setTasks] = useState<Task[]>([]);
   const [loading, setLoading] = useState<boolean>(true);
+  const [isSyncingCanvas, setIsSyncingCanvas] = useState<boolean>(false);
   const [searchQuery, setSearchQuery] = useState<string>('');
   const [selectedCourse, setSelectedCourse] = useState<string>('all');
   const [viewMode, setViewMode] = useState<ViewMode>('board');
@@ -37,11 +38,11 @@ export default function App() {
   const [taskTitle, setTaskTitle] = useState<string>('');
   const [taskDesc, setTaskDesc] = useState<string>('');
   const [taskStatus, setTaskStatus] = useState<TaskStatus>('todo');
-  const [taskPriority, setTaskPriority] = useState<'low' | 'normal' | 'high'>('normal');
+  const [taskPriority, setTaskPriority] = useState<TaskPriority>('normal');
   const [taskDueDate, setTaskDueDate] = useState<string>('');
   const [courseCode, setCourseCode] = useState<string>('');
 
-  const fetchTasksFromDB = async () => {
+  const fetchTasksFromDB = useCallback(async () => {
     const user = await getOrCreateGuestUser();
     if (!user) return [];
 
@@ -52,20 +53,126 @@ export default function App() {
       .order('position', { ascending: true });
 
     if (error) throw error;
-    return data || [];
-  };
+    return (data || []) as Task[];
+  }, []);
+
+  // Background Auto-Sync Functionality
+  const syncCanvasInBackground = useCallback(async () => {
+    try {
+      setIsSyncingCanvas(true);
+      const user = await getOrCreateGuestUser();
+      if (!user) return;
+
+      // Check localStorage or Database for saved iCal Feed URL
+      let savedUrl = localStorage.getItem('canvas_ical_url');
+
+      if (!savedUrl) {
+        const { data: profile } = await supabase
+          .from('profiles')
+          .select('canvas_ical_url')
+          .eq('id', user.id)
+          .maybeSingle();
+
+        if (profile?.canvas_ical_url) {
+          savedUrl = profile.canvas_ical_url;
+          localStorage.setItem('canvas_ical_url', savedUrl);
+        }
+      }
+
+      if (!savedUrl) return;
+
+      // Fetch raw feed using proxy fallback
+      let formattedUrl = savedUrl.trim();
+      if (formattedUrl.startsWith('webcal://')) {
+        formattedUrl = formattedUrl.replace('webcal://', 'https://');
+      }
+
+      const proxyUrl = `https://corsproxy.io/?${encodeURIComponent(formattedUrl)}`;
+      const res = await fetch(proxyUrl);
+      if (!res.ok) return;
+
+      const icsText = await res.text();
+      
+      // Inline lightweight RFC 5545 parser for background refresh
+      const normalized = icsText.replace(/\r\n/g, '\n').replace(/\r/g, '\n').replace(/\n[ \t]/g, '');
+      const vevents = normalized.split(/BEGIN:VEVENT/i).slice(1);
+      
+      const payload = [];
+      for (const block of vevents) {
+        const cleanBlock = block.split(/END:VEVENT/i)[0];
+        const uidMatch = cleanBlock.match(/^UID:(.*)$/m);
+        const canvasEventId = uidMatch ? uidMatch[1].trim() : null;
+
+        const summaryMatch = cleanBlock.match(/^SUMMARY.*?:(.*)$/m);
+        const rawSummary = summaryMatch ? summaryMatch[1].trim() : 'Canvas Assignment';
+
+        if (!rawSummary || /^announcement:/i.test(rawSummary) || rawSummary.toLowerCase().includes('[announcement]')) {
+          continue;
+        }
+
+        let courseCodeMatch: string | null = null;
+        const courseMatch = rawSummary.match(/\[(.*?)\]/) || rawSummary.match(/^([A-Za-z]{2,4}\s*\d{3}[A-Za-z]?):/);
+        if (courseMatch) courseCodeMatch = courseMatch[1].trim();
+
+        const cleanTitle = rawSummary
+          .replace(/\[.*?\]/g, '')
+          .replace(/^([A-Za-z]{2,4}\s*\d{3}[A-Za-z]?):\s*/, '')
+          .trim();
+
+        const dtEndMatch = cleanBlock.match(/^DTEND.*?:(\d{8}(?:T\d{6}Z?)?)/m);
+        const dtStartMatch = cleanBlock.match(/^DTSTART.*?:(\d{8}(?:T\d{6}Z?)?)/m);
+        const rawDateStr = dtEndMatch ? dtEndMatch[1] : dtStartMatch ? dtStartMatch[1] : null;
+
+        let dueDateStr = new Date().toISOString().split('T')[0];
+        if (rawDateStr && rawDateStr.length >= 8) {
+          dueDateStr = `${rawDateStr.substring(0, 4)}-${rawDateStr.substring(4, 6)}-${rawDateStr.substring(6, 8)}`;
+        }
+
+        const descMatch = cleanBlock.match(/^DESCRIPTION.*?:(.*)$/m);
+        const description = descMatch
+          ? descMatch[1].replace(/\\n/g, '\n').replace(/\\/g, '').trim()
+          : 'Imported from Canvas iCal Feed';
+
+        payload.push({
+          user_id: user.id,
+          title: cleanTitle || rawSummary,
+          description,
+          status: 'todo' as TaskStatus,
+          priority: 'normal' as TaskPriority,
+          due_date: dueDateStr,
+          course_code: courseCodeMatch,
+          canvas_event_id: canvasEventId,
+        });
+      }
+
+      if (payload.length > 0) {
+        await supabase
+          .from('tasks')
+          .upsert(payload, { onConflict: 'canvas_event_id' });
+
+        const refreshedData = await fetchTasksFromDB();
+        setTasks(refreshedData);
+      }
+    } catch (err) {
+      console.warn('Background Canvas Sync skipped or failed:', err);
+    } finally {
+      setIsSyncingCanvas(false);
+    }
+  }, [fetchTasksFromDB]);
 
   useEffect(() => {
     fetchTasksFromDB()
       .then((data) => {
         setTasks(data);
         setLoading(false);
+        // Perform silent background sync after initial tasks fetch
+        void syncCanvasInBackground();
       })
       .catch((err) => {
         console.error('Error fetching tasks:', err);
         setLoading(false);
       });
-  }, []);
+  }, [fetchTasksFromDB, syncCanvasInBackground]);
 
   const uniqueCourseCodes = Array.from(
     new Set(
@@ -212,7 +319,7 @@ export default function App() {
       if (error) {
         console.error('Error inserting task into Supabase:', error);
       } else if (data && data.length > 0) {
-        setTasks((prev) => prev.map((t) => (t.id === tempId ? data[0] : t)));
+        setTasks((prev) => prev.map((t) => (t.id === tempId ? (data[0] as Task) : t)));
       }
     }
 
@@ -235,7 +342,7 @@ export default function App() {
     setTaskTitle(task.title);
     setTaskDesc(task.description || '');
     setTaskStatus(task.status);
-    setTaskPriority(task.priority);
+    setTaskPriority(task.priority || 'normal');
     setTaskDueDate(task.due_date || getLocalDateString());
     setCourseCode(task.course_code || '');
     setIsModalOpen(true);
@@ -244,6 +351,18 @@ export default function App() {
   const closeModal = () => {
     setIsModalOpen(false);
     setEditingTask(null);
+  };
+
+  const handleTasksImported = (importedTasks: Task[]) => {
+    setTasks((prev) => {
+      const mergedMap = new Map<string, Task>();
+      // Insert existing tasks into map
+      prev.forEach((t) => mergedMap.set(t.id, t));
+      // Upsert/replace with freshly imported tasks
+      importedTasks.forEach((t) => mergedMap.set(t.id, t));
+      return Array.from(mergedMap.values());
+    });
+    void fetchTasksFromDB().then(setTasks);
   };
 
   const filteredTasks = tasks.filter((task) => {
@@ -301,6 +420,14 @@ export default function App() {
             onChange={(e) => setSearchQuery(e.target.value)}
             className="px-3.5 py-2 bg-slate-900 border border-slate-800 rounded-lg text-xs text-slate-200 focus:outline-none focus:border-indigo-500 w-64"
           />
+          <button
+            onClick={() => void syncCanvasInBackground()}
+            disabled={isSyncingCanvas}
+            title="Re-sync Canvas assignments"
+            className="p-2 bg-slate-900 hover:bg-slate-800 border border-slate-800 text-slate-300 rounded-lg transition disabled:opacity-50"
+          >
+            <RefreshCw size={14} className={isSyncingCanvas ? 'animate-spin text-indigo-400' : ''} />
+          </button>
           <button
             onClick={() => setIsCanvasModalOpen(true)}
             className="px-3.5 py-2 bg-slate-900 hover:bg-slate-800 border border-slate-800 text-slate-200 font-semibold text-xs rounded-lg transition"
@@ -402,7 +529,7 @@ export default function App() {
                 <div
                   key={status}
                   onDragOver={(e) => e.preventDefault()}
-                  onDrop={(e) => handleDropOnColumn(e, status)}
+                  onDrop={(e) => void handleDropOnColumn(e, status)}
                   className="bg-slate-900/60 border border-slate-800 rounded-xl p-4 flex flex-col"
                 >
                   <div className="flex items-center justify-between mb-4 border-b border-slate-800 pb-2">
@@ -425,7 +552,7 @@ export default function App() {
                           onDragStart={(e) => e.dataTransfer.setData('text/plain', task.id)}
                           onDrop={(e) => {
                             e.stopPropagation();
-                            handleDropOnColumn(e, status, task.id);
+                            void handleDropOnColumn(e, status, task.id);
                           }}
                           onClick={() => openEditModal(task)}
                           className={`bg-slate-800 border p-3.5 rounded-lg cursor-grab active:cursor-grabbing transition group shadow-sm relative ${
@@ -440,7 +567,7 @@ export default function App() {
                               <button
                                 onClick={(e) => {
                                   e.stopPropagation();
-                                  handleToggleTaskComplete(task.id);
+                                  void handleToggleTaskComplete(task.id);
                                 }}
                                 title={isDone ? 'Mark Incomplete' : 'Mark Complete'}
                                 className={`h-4 w-4 rounded border flex items-center justify-center transition-colors ${
@@ -468,7 +595,7 @@ export default function App() {
                               <button
                                 onClick={(e) => {
                                   e.stopPropagation();
-                                  handleDeleteTask(task.id);
+                                  void handleDeleteTask(task.id);
                                 }}
                                 title="Delete task"
                                 className="opacity-0 group-hover:opacity-100 p-1 text-slate-400 hover:text-rose-400 rounded transition-opacity"
@@ -502,7 +629,7 @@ export default function App() {
                                   : 'bg-emerald-950 text-emerald-300 border border-emerald-800/40'
                               }`}
                             >
-                              {task.priority}
+                              {task.priority || 'normal'}
                             </span>
                             {task.due_date && <span>Due: {task.due_date}</span>}
                           </div>
@@ -517,8 +644,8 @@ export default function App() {
         ) : (
           <WeeklyCalendar
             tasks={filteredTasks}
-            onToggleDone={handleToggleTaskComplete}
-            onDeleteTask={handleDeleteTask}
+            onToggleDone={(id) => void handleToggleTaskComplete(id)}
+            onDeleteTask={(id) => void handleDeleteTask(id)}
             onTaskClick={openEditModal}
             onDayClick={(dateStr) => openCreateModal(dateStr)}
           />
@@ -533,7 +660,7 @@ export default function App() {
               {editingTask ? 'Edit Task' : 'Create New Task'}
             </h3>
 
-            <form onSubmit={handleSaveTask} className="flex flex-col gap-4">
+            <form onSubmit={(e) => void handleSaveTask(e)} className="flex flex-col gap-4">
               <div>
                 <label className="block text-xs font-semibold text-slate-400 mb-1">Title *</label>
                 <input
@@ -597,7 +724,7 @@ export default function App() {
                   <label className="block text-xs font-semibold text-slate-400 mb-1">Priority</label>
                   <select
                     value={taskPriority}
-                    onChange={(e) => setTaskPriority(e.target.value as 'low' | 'normal' | 'high')}
+                    onChange={(e) => setTaskPriority(e.target.value as TaskPriority)}
                     className="w-full px-3 py-2 bg-slate-800 border border-slate-700 rounded-lg text-xs text-slate-100 focus:outline-none focus:border-indigo-500"
                   >
                     <option value="low">Low</option>
@@ -611,7 +738,7 @@ export default function App() {
                 {editingTask ? (
                   <button
                     type="button"
-                    onClick={() => handleDeleteTask(editingTask.id)}
+                    onClick={() => void handleDeleteTask(editingTask.id)}
                     className="px-3 py-1.5 bg-rose-950 hover:bg-rose-900 text-rose-300 text-xs font-semibold rounded-lg transition"
                   >
                     Delete Task
@@ -643,9 +770,7 @@ export default function App() {
       <CanvasSyncModal
         isOpen={isCanvasModalOpen}
         onClose={() => setIsCanvasModalOpen(false)}
-        onTasksImported={(importedTasks) => {
-          setTasks((prev) => [...prev, ...importedTasks]);
-        }}
+        onTasksImported={handleTasksImported}
       />
     </div>
   );

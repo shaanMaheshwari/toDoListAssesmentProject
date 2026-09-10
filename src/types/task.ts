@@ -15,6 +15,7 @@ export interface Task {
   created_at?: string;
   source?: 'manual' | 'canvas';
   course_code?: string | null;
+  canvas_event_id?: string; 
   position: number;
 }
 
