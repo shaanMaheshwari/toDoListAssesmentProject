@@ -63,10 +63,10 @@ export default function App() {
       const user = await getOrCreateGuestUser();
       if (!user) return;
 
-      // Check localStorage or Database for saved iCal Feed URL
-      let savedUrl: string | null = localStorage.getItem('canvas_ical_url');
+      // 1. Resolve raw URL from localStorage or Database into a single local variable
+      let rawUrl: string | null = localStorage.getItem('canvas_ical_url');
 
-      if (!savedUrl) {
+      if (!rawUrl) {
         const { data: profile } = await supabase
           .from('profiles')
           .select('canvas_ical_url')
@@ -74,20 +74,21 @@ export default function App() {
           .maybeSingle();
 
         if (profile?.canvas_ical_url) {
-          savedUrl = profile.canvas_ical_url;
-          localStorage.setItem('canvas_ical_url', savedUrl);
+          rawUrl = profile.canvas_ical_url;
+          localStorage.setItem('canvas_ical_url', rawUrl);
         }
       }
 
-      // Hard guard check: ensures savedUrl is strictly a non-empty string
-      if (!savedUrl || typeof savedUrl !== 'string') return;
+      // 2. Early exit guard
+      if (!rawUrl) return;
 
-      // Force strict string resolution to eliminate TS2345
-      const urlString: string = savedUrl;
-      let formattedUrl: string = urlString.trim();
-      if (formattedUrl.startsWith('webcal://')) {
-        formattedUrl = formattedUrl.replace('webcal://', 'https://');
-      }
+      // 3. Bind to an immutable const string so TypeScript guarantees non-nullability
+      const validUrl: string = rawUrl.trim();
+      if (!validUrl) return;
+
+      const formattedUrl: string = validUrl.startsWith('webcal://')
+        ? validUrl.replace('webcal://', 'https://')
+        : validUrl;
 
       const proxyUrl = `https://corsproxy.io/?${encodeURIComponent(formattedUrl)}`;
       const res = await fetch(proxyUrl);
