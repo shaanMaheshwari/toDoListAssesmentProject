@@ -79,15 +79,17 @@ export default function App() {
         }
       }
 
-      if (!savedUrl) return;
+      // Explicit type guard ensuring savedUrl is strictly a non-empty string
+      if (typeof savedUrl !== 'string' || !savedUrl.trim()) return;
 
-      let formattedUrl = savedUrl.trim();
-      if (formattedUrl.startsWith('webcal://')) {
-        formattedUrl = formattedUrl.replace('webcal://', 'https://');
-      }
+      // Extract into an immutable strictly typed string constant
+      const targetUrl: string = savedUrl.trim();
 
-      // Using (formattedUrl || '') guarantees TypeScript receives a strict string argument
-      const proxyUrl = `https://corsproxy.io/?${encodeURIComponent(String(formattedUrl))}`;
+      const formattedUrl: string = targetUrl.startsWith('webcal://')
+        ? targetUrl.replace('webcal://', 'https://')
+        : targetUrl;
+
+      const proxyUrl = `https://corsproxy.io/?${encodeURIComponent(formattedUrl)}`;
       const res = await fetch(proxyUrl);
       if (!res.ok) return;
 
