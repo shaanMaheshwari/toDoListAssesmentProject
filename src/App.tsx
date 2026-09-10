@@ -79,17 +79,16 @@ export default function App() {
         }
       }
 
+      // Early return guard: guarantees savedUrl is a valid non-empty string below this line
       if (!savedUrl || typeof savedUrl !== 'string') return;
 
-      // 2. Explicitly type formattedUrl as string
-      let formattedUrl: string = savedUrl.trim();
-      if (formattedUrl.startsWith('webcal://')) {
-        formattedUrl = formattedUrl.replace('webcal://', 'https://');
-      }
+      // Create a fresh string variable explicitly typed as string
+      const rawUrl: string = savedUrl.trim();
+      const formattedUrl: string = rawUrl.startsWith('webcal://')
+        ? rawUrl.replace('webcal://', 'https://')
+        : rawUrl;
 
-      // 3. Pass the guaranteed string to encodeURIComponent
       const proxyUrl = `https://corsproxy.io/?${encodeURIComponent(formattedUrl)}`;
-      
       const res = await fetch(proxyUrl);
       if (!res.ok) return;
 
