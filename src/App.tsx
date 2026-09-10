@@ -42,7 +42,7 @@ export default function App() {
   const [taskDueDate, setTaskDueDate] = useState<string>('');
   const [courseCode, setCourseCode] = useState<string>('');
 
-  const fetchTasksFromDB = useCallback(async () => {
+  const fetchTasksFromDB = useCallback(async (): Promise<Task[]> => {
     const user = await getOrCreateGuestUser();
     if (!user) return [];
 
@@ -57,14 +57,14 @@ export default function App() {
   }, []);
 
   // Background Auto-Sync Functionality
-  const syncCanvasInBackground = useCallback(async () => {
+  const syncCanvasInBackground = useCallback(async (): Promise<void> => {
     try {
       setIsSyncingCanvas(true);
       const user = await getOrCreateGuestUser();
       if (!user) return;
 
       // Check localStorage or Database for saved iCal Feed URL
-      let savedUrl = localStorage.getItem('canvas_ical_url');
+      let savedUrl: string | null = localStorage.getItem('canvas_ical_url');
 
       if (!savedUrl) {
         const { data: profile } = await supabase
@@ -79,10 +79,10 @@ export default function App() {
         }
       }
 
-      if (!savedUrl) return;
+      if (!savedUrl || typeof savedUrl !== 'string') return;
 
       // Fetch raw feed using proxy fallback
-      let formattedUrl = savedUrl.trim();
+      let formattedUrl: string = savedUrl.trim();
       if (formattedUrl.startsWith('webcal://')) {
         formattedUrl = formattedUrl.replace('webcal://', 'https://');
       }
@@ -165,7 +165,6 @@ export default function App() {
       .then((data) => {
         setTasks(data);
         setLoading(false);
-        // Perform silent background sync after initial tasks fetch
         void syncCanvasInBackground();
       })
       .catch((err) => {
@@ -182,7 +181,7 @@ export default function App() {
     )
   ).sort();
 
-  const persistTaskPositions = async (updatedTasks: Task[]) => {
+  const persistTaskPositions = async (updatedTasks: Task[]): Promise<void> => {
     const updates = updatedTasks.map((t, index) => ({
       id: t.id,
       user_id: t.user_id,
@@ -200,7 +199,7 @@ export default function App() {
     }
   };
 
-  const handleDropOnColumn = async (e: React.DragEvent, targetStatus: TaskStatus, targetTaskId?: string) => {
+  const handleDropOnColumn = async (e: React.DragEvent, targetStatus: TaskStatus, targetTaskId?: string): Promise<void> => {
     e.preventDefault();
     const draggedTaskId = e.dataTransfer.getData('text/plain');
     if (!draggedTaskId) return;
@@ -228,7 +227,7 @@ export default function App() {
     await persistTaskPositions(targetColumnTasks);
   };
 
-  const handleToggleTaskComplete = async (taskId: string) => {
+  const handleToggleTaskComplete = async (taskId: string): Promise<void> => {
     const targetTask = tasks.find((t) => t.id === taskId);
     if (!targetTask) return;
 
@@ -245,18 +244,30 @@ export default function App() {
 
     if (error) {
       console.error('Failed to toggle task status:', error);
+      void fetchTasksFromDB().then(setTasks);
     }
   };
 
-  const handleDeleteTask = async (taskId: string) => {
+  const handleDeleteTask = async (taskId: string): Promise<void> => {
     setTasks((prev) => prev.filter((t) => t.id !== taskId));
-    await supabase.from('tasks').delete().eq('id', taskId);
+    const { error } = await supabase.from('tasks').delete().eq('id', taskId);
+
+    if (error) {
+      console.error('Failed to delete task from Supabase:', error);
+      void fetchTasksFromDB().then(setTasks);
+    }
+
     if (editingTask?.id === taskId) {
       closeModal();
     }
   };
 
-  const handleSaveTask = async (e: React.FormEvent) => {
+  const closeModal = () => {
+    setIsModalOpen(false);
+    setEditingTask(null);
+  };
+
+  const handleSaveTask = async (e: React.FormEvent): Promise<void> => {
     e.preventDefault();
     if (!taskTitle.trim()) return;
 
@@ -348,17 +359,10 @@ export default function App() {
     setIsModalOpen(true);
   };
 
-  const closeModal = () => {
-    setIsModalOpen(false);
-    setEditingTask(null);
-  };
-
   const handleTasksImported = (importedTasks: Task[]) => {
     setTasks((prev) => {
       const mergedMap = new Map<string, Task>();
-      // Insert existing tasks into map
       prev.forEach((t) => mergedMap.set(t.id, t));
-      // Upsert/replace with freshly imported tasks
       importedTasks.forEach((t) => mergedMap.set(t.id, t));
       return Array.from(mergedMap.values());
     });
@@ -421,7 +425,7 @@ export default function App() {
             className="px-3.5 py-2 bg-slate-900 border border-slate-800 rounded-lg text-xs text-slate-200 focus:outline-none focus:border-indigo-500 w-64"
           />
           <button
-            onClick={() => void syncCanvasInBackground()}
+            onClick={syncCanvasInBackground}
             disabled={isSyncingCanvas}
             title="Re-sync Canvas assignments"
             className="p-2 bg-slate-900 hover:bg-slate-800 border border-slate-800 text-slate-300 rounded-lg transition disabled:opacity-50"
@@ -529,7 +533,7 @@ export default function App() {
                 <div
                   key={status}
                   onDragOver={(e) => e.preventDefault()}
-                  onDrop={(e) => void handleDropOnColumn(e, status)}
+                  onDrop={(e) => handleDropOnColumn(e, status)}
                   className="bg-slate-900/60 border border-slate-800 rounded-xl p-4 flex flex-col"
                 >
                   <div className="flex items-center justify-between mb-4 border-b border-slate-800 pb-2">
@@ -552,7 +556,7 @@ export default function App() {
                           onDragStart={(e) => e.dataTransfer.setData('text/plain', task.id)}
                           onDrop={(e) => {
                             e.stopPropagation();
-                            void handleDropOnColumn(e, status, task.id);
+                            handleDropOnColumn(e, status, task.id);
                           }}
                           onClick={() => openEditModal(task)}
                           className={`bg-slate-800 border p-3.5 rounded-lg cursor-grab active:cursor-grabbing transition group shadow-sm relative ${
@@ -567,7 +571,7 @@ export default function App() {
                               <button
                                 onClick={(e) => {
                                   e.stopPropagation();
-                                  void handleToggleTaskComplete(task.id);
+                                  handleToggleTaskComplete(task.id);
                                 }}
                                 title={isDone ? 'Mark Incomplete' : 'Mark Complete'}
                                 className={`h-4 w-4 rounded border flex items-center justify-center transition-colors ${
@@ -595,7 +599,7 @@ export default function App() {
                               <button
                                 onClick={(e) => {
                                   e.stopPropagation();
-                                  void handleDeleteTask(task.id);
+                                  handleDeleteTask(task.id);
                                 }}
                                 title="Delete task"
                                 className="opacity-0 group-hover:opacity-100 p-1 text-slate-400 hover:text-rose-400 rounded transition-opacity"
@@ -644,10 +648,10 @@ export default function App() {
         ) : (
           <WeeklyCalendar
             tasks={filteredTasks}
-            onToggleDone={(id) => void handleToggleTaskComplete(id)}
-            onDeleteTask={(id) => void handleDeleteTask(id)}
+            onToggleDone={handleToggleTaskComplete}
+            onDeleteTask={handleDeleteTask}
             onTaskClick={openEditModal}
-            onDayClick={(dateStr) => openCreateModal(dateStr)}
+            onDayClick={openCreateModal}
           />
         )}
       </main>
@@ -660,7 +664,7 @@ export default function App() {
               {editingTask ? 'Edit Task' : 'Create New Task'}
             </h3>
 
-            <form onSubmit={(e) => void handleSaveTask(e)} className="flex flex-col gap-4">
+            <form onSubmit={handleSaveTask} className="flex flex-col gap-4">
               <div>
                 <label className="block text-xs font-semibold text-slate-400 mb-1">Title *</label>
                 <input
@@ -738,7 +742,7 @@ export default function App() {
                 {editingTask ? (
                   <button
                     type="button"
-                    onClick={() => void handleDeleteTask(editingTask.id)}
+                    onClick={() => handleDeleteTask(editingTask.id)}
                     className="px-3 py-1.5 bg-rose-950 hover:bg-rose-900 text-rose-300 text-xs font-semibold rounded-lg transition"
                   >
                     Delete Task
