@@ -87,7 +87,7 @@ export default function App() {
       }
 
       // Using (formattedUrl || '') guarantees TypeScript receives a strict string argument
-      const proxyUrl = `https://corsproxy.io/?${encodeURIComponent(formattedUrl || '')}`;
+      const proxyUrl = `https://corsproxy.io/?${encodeURIComponent(String(formattedUrl))}`;
       const res = await fetch(proxyUrl);
       if (!res.ok) return;
 
