@@ -56,14 +56,13 @@ export default function App() {
     return (data || []) as Task[];
   }, []);
 
-  // Background Auto-Sync Functionality
   const syncCanvasInBackground = useCallback(async (): Promise<void> => {
     try {
       setIsSyncingCanvas(true);
       const user = await getOrCreateGuestUser();
       if (!user) return;
 
-      // Check localStorage or Database for saved iCal Feed URL
+      // 1. Retrieve Canvas URL from localStorage or profiles
       let savedUrl: string | null = localStorage.getItem('canvas_ical_url');
 
       if (!savedUrl) {
@@ -79,42 +78,67 @@ export default function App() {
         }
       }
 
-      // Explicit type guard ensuring savedUrl is strictly a non-empty string
       if (typeof savedUrl !== 'string' || !savedUrl.trim()) return;
 
-      // Extract into an immutable strictly typed string constant
-      const targetUrl: string = savedUrl.trim();
+      let targetUrl = savedUrl.trim();
+      if (targetUrl.startsWith('webcal://')) {
+        targetUrl = targetUrl.replace('webcal://', 'https://');
+      }
 
-      const formattedUrl: string = targetUrl.startsWith('webcal://')
-        ? targetUrl.replace('webcal://', 'https://')
-        : targetUrl;
+      // 2. Fetch iCal feed via proxy fallback
+      const proxies = [
+        `https://api.allorigins.win/raw?url=${encodeURIComponent(targetUrl)}`,
+        `https://corsproxy.io/?${encodeURIComponent(targetUrl)}`,
+      ];
 
-      const proxyUrl = `https://corsproxy.io/?${encodeURIComponent(formattedUrl)}`;
-      const res = await fetch(proxyUrl);
-      if (!res.ok) return;
+      let icsData = '';
+      for (const proxy of proxies) {
+        try {
+          const res = await fetch(proxy);
+          if (res.ok) {
+            const text = await res.text();
+            if (text.includes('BEGIN:VCALENDAR') || text.includes('BEGIN:VEVENT')) {
+              icsData = text;
+              break;
+            }
+          }
+        } catch {
+          // Fall through to next proxy
+        }
+      }
 
-      const icsText = await res.text();
-      
-      // Inline lightweight RFC 5545 parser for background refresh
-      const normalized = icsText.replace(/\r\n/g, '\n').replace(/\r/g, '\n').replace(/\n[ \t]/g, '');
-      const vevents = normalized.split(/BEGIN:VEVENT/i).slice(1);
-      
+      if (!icsData) return;
+
+      // 3. Parse iCal VEVENTs
+      const normalized = icsData.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+      const unfolded = normalized.replace(/\n[ \t]/g, '');
+      const vevents = unfolded.split(/BEGIN:VEVENT/i).slice(1);
+
       const payload = [];
+
       for (const block of vevents) {
         const cleanBlock = block.split(/END:VEVENT/i)[0];
+
         const uidMatch = cleanBlock.match(/^UID:(.*)$/m);
         const canvasEventId = uidMatch ? uidMatch[1].trim() : null;
 
         const summaryMatch = cleanBlock.match(/^SUMMARY.*?:(.*)$/m);
         const rawSummary = summaryMatch ? summaryMatch[1].trim() : 'Canvas Assignment';
 
-        if (!rawSummary || /^announcement:/i.test(rawSummary) || rawSummary.toLowerCase().includes('[announcement]')) {
+        if (
+          !rawSummary ||
+          /^announcement:/i.test(rawSummary) ||
+          rawSummary.toLowerCase().includes('[announcement]')
+        ) {
           continue;
         }
 
-        let courseCodeMatch: string | null = null;
-        const courseMatch = rawSummary.match(/\[(.*?)\]/) || rawSummary.match(/^([A-Za-z]{2,4}\s*\d{3}[A-Za-z]?):/);
-        if (courseMatch) courseCodeMatch = courseMatch[1].trim();
+        let parsedCourseCode: string | null = null;
+        const courseMatch =
+          rawSummary.match(/\[(.*?)\]/) ||
+          rawSummary.match(/^([A-Za-z]{2,4}\s*\d{3}[A-Za-z]?):/);
+
+        if (courseMatch) parsedCourseCode = courseMatch[1].trim();
 
         const cleanTitle = rawSummary
           .replace(/\[.*?\]/g, '')
@@ -125,15 +149,23 @@ export default function App() {
         const dtStartMatch = cleanBlock.match(/^DTSTART.*?:(\d{8}(?:T\d{6}Z?)?)/m);
         const rawDateStr = dtEndMatch ? dtEndMatch[1] : dtStartMatch ? dtStartMatch[1] : null;
 
-        let dueDateStr = new Date().toISOString().split('T')[0];
+        let dueDateStr = getLocalDateString();
         if (rawDateStr && rawDateStr.length >= 8) {
-          dueDateStr = `${rawDateStr.substring(0, 4)}-${rawDateStr.substring(4, 6)}-${rawDateStr.substring(6, 8)}`;
+          const year = rawDateStr.substring(0, 4);
+          const month = rawDateStr.substring(4, 6);
+          const day = rawDateStr.substring(6, 8);
+          dueDateStr = `${year}-${month}-${day}`;
         }
 
         const descMatch = cleanBlock.match(/^DESCRIPTION.*?:(.*)$/m);
         const description = descMatch
           ? descMatch[1].replace(/\\n/g, '\n').replace(/\\/g, '').trim()
           : 'Imported from Canvas iCal Feed';
+
+        if (!parsedCourseCode) {
+          const descCourseMatch = description.match(/\[(.*?)\]/);
+          if (descCourseMatch) parsedCourseCode = descCourseMatch[1].trim();
+        }
 
         payload.push({
           user_id: user.id,
@@ -142,25 +174,41 @@ export default function App() {
           status: 'todo' as TaskStatus,
           priority: 'normal' as TaskPriority,
           due_date: dueDateStr,
-          course_code: courseCodeMatch,
+          course_code: parsedCourseCode,
           canvas_event_id: canvasEventId,
         });
       }
 
+      // 4. Upsert records and perform in-memory Map key deduplication
       if (payload.length > 0) {
-        await supabase
+        const { data: updatedTasks, error } = await supabase
           .from('tasks')
-          .upsert(payload, { onConflict: 'canvas_event_id' });
+          .upsert(payload, { onConflict: 'canvas_event_id' })
+          .select();
 
-        const refreshedData = await fetchTasksFromDB();
-        setTasks(refreshedData);
+        if (!error && updatedTasks) {
+          setTasks((prevTasks) => {
+            // Create a map keyed by canvas_event_id or fallback id
+            const taskMap = new Map(
+              prevTasks.map((t) => [t.canvas_event_id || t.id, t])
+            );
+
+            // Merge or replace updated tasks
+            (updatedTasks as Task[]).forEach((task) => {
+              const key = task.canvas_event_id || task.id;
+              taskMap.set(key, task);
+            });
+
+            return Array.from(taskMap.values());
+          });
+        }
       }
     } catch (err) {
-      console.warn('Background Canvas Sync skipped or failed:', err);
+      console.warn('Background Canvas Sync error:', err);
     } finally {
       setIsSyncingCanvas(false);
     }
-  }, [fetchTasksFromDB]);
+  }, []);
 
   useEffect(() => {
     fetchTasksFromDB()
@@ -201,7 +249,11 @@ export default function App() {
     }
   };
 
-  const handleDropOnColumn = async (e: React.DragEvent, targetStatus: TaskStatus, targetTaskId?: string): Promise<void> => {
+  const handleDropOnColumn = async (
+    e: React.DragEvent,
+    targetStatus: TaskStatus,
+    targetTaskId?: string
+  ): Promise<void> => {
     e.preventDefault();
     const draggedTaskId = e.dataTransfer.getData('text/plain');
     if (!draggedTaskId) return;
@@ -222,7 +274,9 @@ export default function App() {
     const updatedDraggedTask = { ...draggedTask, status: targetStatus };
     targetColumnTasks.splice(insertIndex, 0, updatedDraggedTask);
 
-    const otherTasks = tasks.filter((t) => t.status !== targetStatus && t.id !== draggedTaskId);
+    const otherTasks = tasks.filter(
+      (t) => t.status !== targetStatus && t.id !== draggedTaskId
+    );
     const newTasksState = [...otherTasks, ...targetColumnTasks];
 
     setTasks(newTasksState);
@@ -317,16 +371,18 @@ export default function App() {
 
       const { data, error } = await supabase
         .from('tasks')
-        .insert([{
-          user_id: user.id,
-          title: taskTitle,
-          description: taskDesc,
-          status: taskStatus,
-          priority: taskPriority,
-          due_date: finalDueDate,
-          course_code: courseCode || null,
-          position: statusTasks.length,
-        }])
+        .insert([
+          {
+            user_id: user.id,
+            title: taskTitle,
+            description: taskDesc,
+            status: taskStatus,
+            priority: taskPriority,
+            due_date: finalDueDate,
+            course_code: courseCode || null,
+            position: statusTasks.length,
+          },
+        ])
         .select();
 
       if (error) {
@@ -364,8 +420,8 @@ export default function App() {
   const handleTasksImported = (importedTasks: Task[]) => {
     setTasks((prev) => {
       const mergedMap = new Map<string, Task>();
-      prev.forEach((t) => mergedMap.set(t.id, t));
-      importedTasks.forEach((t) => mergedMap.set(t.id, t));
+      prev.forEach((t) => mergedMap.set(t.canvas_event_id || t.id, t));
+      importedTasks.forEach((t) => mergedMap.set(t.canvas_event_id || t.id, t));
       return Array.from(mergedMap.values());
     });
     void fetchTasksFromDB().then(setTasks);
@@ -749,7 +805,9 @@ export default function App() {
                   >
                     Delete Task
                   </button>
-                ) : <div />}
+                ) : (
+                  <div />
+                )}
 
                 <div className="flex gap-2">
                   <button

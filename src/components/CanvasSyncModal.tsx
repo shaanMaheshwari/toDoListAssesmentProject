@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { supabase, getOrCreateGuestUser } from '../lib/supabase';
 import type { Task, TaskPriority, TaskStatus } from '../types/task';
 
@@ -21,11 +21,45 @@ export const CanvasSyncModal: React.FC<CanvasSyncModalProps> = ({
   onClose,
   onTasksImported,
 }) => {
-  const [importTab, setImportTab] = useState<'url' | 'raw'>('raw');
+  const [importTab, setImportTab] = useState<'url' | 'raw'>('url');
   const [icalUrl, setIcalUrl] = useState<string>('');
   const [rawIcsText, setRawIcsText] = useState<string>('');
   const [syncing, setSyncing] = useState<boolean>(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
+
+  // Load existing saved URL from Supabase profiles on modal open
+  useEffect(() => {
+    if (!isOpen) return;
+
+    const loadSavedProfileUrl = async () => {
+      try {
+        const user = await getOrCreateGuestUser();
+        if (!user) return;
+
+        // Try local storage first for immediate display
+        const cachedUrl = localStorage.getItem('canvas_ical_url');
+        if (cachedUrl) {
+          setIcalUrl(cachedUrl);
+        }
+
+        // Fetch latest saved URL from Supabase profiles table
+        const { data, error } = await supabase
+          .from('profiles')
+          .select('canvas_ical_url')
+          .eq('id', user.id)
+          .maybeSingle();
+
+        if (!error && data?.canvas_ical_url) {
+          setIcalUrl(data.canvas_ical_url);
+          localStorage.setItem('canvas_ical_url', data.canvas_ical_url);
+        }
+      } catch (err) {
+        console.error('Error fetching profile Canvas URL:', err);
+      }
+    };
+
+    void loadSavedProfileUrl();
+  }, [isOpen]);
 
   if (!isOpen) return null;
 
@@ -199,9 +233,17 @@ export const CanvasSyncModal: React.FC<CanvasSyncModalProps> = ({
       if (importTab === 'url' && icalUrl.trim()) {
         const trimmedUrl = icalUrl.trim();
         localStorage.setItem('canvas_ical_url', trimmedUrl);
+        
         await supabase
           .from('profiles')
-          .upsert({ id: user.id, canvas_ical_url: trimmedUrl, updated_at: new Date().toISOString() });
+          .upsert(
+            { 
+              id: user.id, 
+              canvas_ical_url: trimmedUrl, 
+              updated_at: new Date().toISOString() 
+            }, 
+            { onConflict: 'id' }
+          );
       }
 
       if (data) {
