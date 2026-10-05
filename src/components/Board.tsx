@@ -1,56 +1,61 @@
-import type { Task, Status } from '../types/task';
-import { Columns } from './Column';
-import { DragDropContext } from '@hello-pangea/dnd';
-import type { DropResult } from '@hello-pangea/dnd';
+import type { Task, TaskStatus } from '../types/task';
+import { TaskCard } from './TaskCard';
 
 interface BoardProps {
   tasks: Task[];
+  onDropOnColumn: (e: React.DragEvent, status: TaskStatus, taskId?: string) => void;
   onEditTask: (task: Task) => void;
-  onDeleteTask: (id: string) => void;
-  onStatusChange: (taskId: string, newStatus: Status) => void;
+  onToggleTaskComplete: (taskId: string) => void;
+  onDeleteTask: (taskId: string) => void;
 }
 
-const COLUMNS: { title: string; status: Status }[] = [
-  { title: 'To Do', status: 'todo' },
-  { title: 'In Progress', status: 'in_progress' },
-  { title: 'In Review', status: 'in_review' },
-  { title: 'Done', status: 'done' },
-];
+const BOARD_STATUSES: TaskStatus[] = ['todo', 'in_progress', 'in_review', 'done'];
 
-export function Board({ tasks, onEditTask, onDeleteTask, onStatusChange }: BoardProps) {
-  const handleDragEnd = (result: DropResult) => {
-    const { destination, source, draggableId } = result;
-
-    // Dropped outside a valid droppable zone
-    if (!destination) return;
-
-    // Dropped in the exact same column and position
-    if (
-      destination.droppableId === source.droppableId &&
-      destination.index === source.index
-    ) {
-      return;
-    }
-
-    // Status changed -> trigger backend update
-    const newStatus = destination.droppableId as Status;
-    onStatusChange(draggableId, newStatus);
-  };
-
+export function Board({
+  tasks,
+  onDropOnColumn,
+  onEditTask,
+  onToggleTaskComplete,
+  onDeleteTask,
+}: BoardProps) {
   return (
-    <DragDropContext onDragEnd={handleDragEnd}>
-      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4 h-full min-w-[1000px]">
-        {COLUMNS.map((col) => (
-          <Columns
-            key={col.status}
-            title={col.title}
-            status={col.status}
-            tasks={tasks.filter((t) => t.status === col.status)}
-            onEditTask={onEditTask}
-            onDeleteTask={onDeleteTask}
-          />
-        ))}
-      </div>
-    </DragDropContext>
+    <div className="grid grid-cols-1 md:grid-cols-4 gap-4 min-h-[calc(100vh-320px)]">
+      {BOARD_STATUSES.map((status) => {
+        const statusTasks = tasks.filter((t) => t.status === status);
+
+        return (
+          <div
+            key={status}
+            onDragOver={(e) => e.preventDefault()}
+            onDrop={(e) => onDropOnColumn(e, status)}
+            className="bg-slate-900/60 border border-slate-800 rounded-xl p-4 flex flex-col"
+          >
+            <div className="flex items-center justify-between mb-4 border-b border-slate-800 pb-2">
+              <h3 className="text-xs font-bold uppercase tracking-wider text-slate-400">
+                {status.replace('_', ' ')}
+              </h3>
+              <span className="text-xs font-bold text-slate-500 bg-slate-800 px-2 py-0.5 rounded-full">
+                {statusTasks.length}
+              </span>
+            </div>
+
+            <div className="flex-1 flex flex-col gap-3 overflow-y-auto">
+              {statusTasks.map((task, index) => (
+                <TaskCard
+                  key={task.id}
+                  task={task}
+                  index={index}
+                  status={status}
+                  onDropOnColumn={onDropOnColumn}
+                  onEdit={onEditTask}
+                  onToggleComplete={onToggleTaskComplete}
+                  onDelete={onDeleteTask}
+                />
+              ))}
+            </div>
+          </div>
+        );
+      })}
+    </div>
   );
 }
