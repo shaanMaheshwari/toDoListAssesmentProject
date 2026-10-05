@@ -7,13 +7,9 @@ serve(async () => {
     const supabaseUrl = Deno.env.get("SUPABASE_URL")!;
     const supabaseServiceKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
 
-    // Use service role key to bypass RLS for background sync
     const supabase = createClient(supabaseUrl, supabaseServiceKey);
-
-    // Get today's date formatted as YYYY-MM-DD
     const todayStr = new Date().toISOString().split("T")[0];
 
-    // 1. Fetch all users who have registered a Canvas feed URL
     const { data: profiles, error: profileError } = await supabase
       .from("profiles")
       .select("id, canvas_feed_url")
@@ -26,55 +22,90 @@ serve(async () => {
     for (const profile of profiles || []) {
       if (!profile.canvas_feed_url) continue;
 
-      // 2. Fetch the .ics feed directly from Canvas
-      const response = await fetch(profile.canvas_feed_url);
-      if (!response.ok) continue;
+      // Select canvas_event_id instead of canvas_uid
+      const { data: existingTasks } = await supabase
+        .from("tasks")
+        .select("canvas_event_id, status, is_deleted")
+        .eq("user_id", profile.id)
+        .not("canvas_event_id", "is", null);
 
-      const icsText = await response.text();
+      const existingMap = new Map<string, { status: string; is_deleted: boolean }>();
+      if (existingTasks) {
+        existingTasks.forEach((t) => {
+          if (t.canvas_event_id) {
+            existingMap.set(t.canvas_event_id, {
+              status: t.status,
+              is_deleted: t.is_deleted ?? false,
+            });
+          }
+        });
+      }
+
+      let icsText = "";
+      try {
+        const response = await fetch(profile.canvas_feed_url);
+        if (!response.ok) continue;
+        icsText = await response.text();
+      } catch {
+        continue;
+      }
+
       const parsedFeed = ical.parseICS(icsText);
+      const payload = [];
 
-      // 3. Process each calendar event
       for (const key in parsedFeed) {
         const event = parsedFeed[key];
         if (event.type !== "VEVENT") continue;
 
-        // Format due date (YYYY-MM-DD)
+        const canvasEventId = event.uid;
+        if (!canvasEventId) continue;
+
+        const existingRecord = existingMap.get(canvasEventId);
+
+        if (existingRecord?.is_deleted) continue;
+
         const dueDate = event.end
           ? new Date(event.end).toISOString().split("T")[0]
           : null;
 
-        // SKIP past assignments
-        if (dueDate && dueDate < todayStr) {
+        if (dueDate && dueDate < todayStr) continue;
+
+        const title = event.summary || "Untitled Canvas Task";
+        if (
+          !title ||
+          /^announcement:/i.test(title) ||
+          title.toLowerCase().includes("[announcement]")
+        ) {
           continue;
         }
 
-        const canvasUid = event.uid;
-        const title = event.summary || "Untitled Canvas Task";
         const description = event.description || "";
-
-        // Extract Course Code from brackets, e.g. "Homework 1 [CMSC330]" -> "CMSC330"
         const courseMatch = title.match(/\[(.*?)\]/);
         const courseCode = courseMatch ? courseMatch[1] : null;
 
-        // 4. Upsert into database (prevents duplicate tasks)
+        const currentStatus = existingRecord ? existingRecord.status : "todo";
+
+        payload.push({
+          user_id: profile.id,
+          canvas_event_id: canvasEventId,
+          title: title.replace(/\s*\[.*?\]\s*/, "").trim(),
+          description: description,
+          course_code: courseCode,
+          due_date: dueDate,
+          status: currentStatus,
+          priority: "normal",
+          is_deleted: false,
+        });
+      }
+
+      if (payload.length > 0) {
         const { error: upsertError } = await supabase
           .from("tasks")
-          .upsert(
-            {
-              user_id: profile.id,
-              canvas_uid: canvasUid,
-              title: title.replace(/\s*\[.*?\]\s*/, ""), // Strip [COURSE] from title
-              description: description,
-              course_code: courseCode,
-              due_date: dueDate,
-              status: "todo",
-              priority: "normal",
-              is_deleted: false,
-            },
-            { onConflict: "canvas_uid" }
-          );
+          .upsert(payload, { onConflict: "canvas_event_id" });
 
-        if (!upsertError) totalSynced++;
+        if (!upsertError) {
+          totalSynced += payload.length;
+        }
       }
     }
 

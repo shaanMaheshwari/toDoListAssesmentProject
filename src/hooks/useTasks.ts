@@ -17,7 +17,7 @@ export function useTasks() {
       .from('tasks')
       .select('*')
       .eq('user_id', user.id)
-      .eq('is_deleted', false) // Filter out soft-deleted tasks
+      .eq('is_deleted', false)
       .order('position', { ascending: true });
 
     if (error) throw error;
@@ -27,57 +27,60 @@ export function useTasks() {
   const triggerCanvasSync = useCallback(async (): Promise<void> => {
     setIsSyncingCanvas(true);
     try {
-      const updated = await syncCanvasTasks();
-      if (updated) {
-        setTasks((prevTasks) => {
-          // Keep active board tasks
-          const taskMap = new Map(
-            prevTasks.map((t) => [t.canvas_event_id || t.id, t])
-          );
-
-          // Only merge in synced tasks that aren't soft-deleted
-          updated.forEach((task) => {
-            if (!task.is_deleted) {
-              const key = task.canvas_event_id || task.id;
-              taskMap.set(key, task);
-            }
-          });
-          return Array.from(taskMap.values());
-        });
-      }
+      await syncCanvasTasks();
+      const refreshedTasks = await fetchTasksFromDB();
+      setTasks(refreshedTasks);
+    } catch (err) {
+      console.error('Error during Canvas sync:', err);
     } finally {
       setIsSyncingCanvas(false);
     }
-  }, []);
+  }, [fetchTasksFromDB]);
 
   useEffect(() => {
-    fetchTasksFromDB()
-      .then((data) => {
-        setTasks(data);
-        setLoading(false);
-        void triggerCanvasSync();
-      })
-      .catch((err) => {
-        console.error('Error fetching tasks:', err);
-        setLoading(false);
-      });
-  }, [fetchTasksFromDB, triggerCanvasSync]);
+    let isMounted = true;
+
+    const initialize = async () => {
+      try {
+        const data = await fetchTasksFromDB();
+        if (isMounted) {
+          setTasks(data);
+          setLoading(false);
+        }
+
+        await syncCanvasTasks();
+        const refreshed = await fetchTasksFromDB();
+        if (isMounted) {
+          setTasks(refreshed);
+        }
+      } catch (err) {
+        console.error('Error initializing tasks:', err);
+        if (isMounted) setLoading(false);
+      }
+    };
+
+    void initialize();
+
+    return () => {
+      isMounted = false;
+    };
+  }, [fetchTasksFromDB]);
 
   const persistTaskPositions = async (updatedTasks: Task[]): Promise<void> => {
-    const updates = updatedTasks.map((t, index) => ({
-      id: t.id,
-      user_id: t.user_id,
-      title: t.title,
-      status: t.status,
-      position: index,
-    }));
+    try {
+      const updatePromises = updatedTasks.map((t, index) =>
+        supabase
+          .from('tasks')
+          .update({
+            status: t.status,
+            position: index,
+          })
+          .eq('id', t.id)
+      );
 
-    const { error } = await supabase
-      .from('tasks')
-      .upsert(updates, { onConflict: 'id' });
-
-    if (error) {
-      console.error('Failed to sync reordered positions:', error);
+      await Promise.all(updatePromises);
+    } catch (error) {
+      console.error('Failed to persist task positions:', error);
     }
   };
 
@@ -87,6 +90,7 @@ export function useTasks() {
     targetTaskId?: string
   ): Promise<void> => {
     e.preventDefault();
+
     const draggedTaskId = e.dataTransfer.getData('text/plain');
     if (!draggedTaskId) return;
 
@@ -106,13 +110,18 @@ export function useTasks() {
     const updatedDraggedTask = { ...draggedTask, status: targetStatus };
     targetColumnTasks.splice(insertIndex, 0, updatedDraggedTask);
 
+    const reorderedTargetColumn = targetColumnTasks.map((t, idx) => ({
+      ...t,
+      position: idx,
+    }));
+
     const otherTasks = tasks.filter(
       (t) => t.status !== targetStatus && t.id !== draggedTaskId
     );
-    const newTasksState = [...otherTasks, ...targetColumnTasks];
+    const newTasksState = [...otherTasks, ...reorderedTargetColumn];
 
     setTasks(newTasksState);
-    await persistTaskPositions(targetColumnTasks);
+    await persistTaskPositions(reorderedTargetColumn);
   };
 
   const handleToggleTaskComplete = async (taskId: string): Promise<void> => {
@@ -137,10 +146,8 @@ export function useTasks() {
   };
 
   const handleDeleteTask = async (taskId: string): Promise<void> => {
-    // Optimistically remove from state
     setTasks((prev) => prev.filter((t) => t.id !== taskId));
 
-    // Soft delete in database
     const { error } = await supabase
       .from('tasks')
       .update({ is_deleted: true })
@@ -221,17 +228,7 @@ export function useTasks() {
     }
   };
 
-  const handleTasksImported = (importedTasks: Task[]) => {
-    setTasks((prev) => {
-      const mergedMap = new Map<string, Task>();
-      prev.forEach((t) => mergedMap.set(t.canvas_event_id || t.id, t));
-      importedTasks.forEach((t) => {
-        if (!t.is_deleted) {
-          mergedMap.set(t.canvas_event_id || t.id, t);
-        }
-      });
-      return Array.from(mergedMap.values());
-    });
+  const handleTasksImported = () => {
     void fetchTasksFromDB().then(setTasks);
   };
 
