@@ -56,6 +56,10 @@ export const syncCanvasTasks = async (): Promise<Task[] | null> => {
     const unfolded = normalized.replace(/\n[ \t]/g, '');
     const vevents = unfolded.split(/BEGIN:VEVENT/i).slice(1);
 
+    // Get today's start of day (midnight) in local time
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+
     const payload = [];
 
     for (const block of vevents) {
@@ -67,11 +71,33 @@ export const syncCanvasTasks = async (): Promise<Task[] | null> => {
       const summaryMatch = cleanBlock.match(/^SUMMARY.*?:(.*)$/m);
       const rawSummary = summaryMatch ? summaryMatch[1].trim() : 'Canvas Assignment';
 
+      // Skip announcements
       if (
         !rawSummary ||
         /^announcement:/i.test(rawSummary) ||
         rawSummary.toLowerCase().includes('[announcement]')
       ) {
+        continue;
+      }
+
+      const dtEndMatch = cleanBlock.match(/^DTEND.*?:(\d{8}(?:T\d{6}Z?)?)/m);
+      const dtStartMatch = cleanBlock.match(/^DTSTART.*?:(\d{8}(?:T\d{6}Z?)?)/m);
+      const rawDateStr = dtEndMatch ? dtEndMatch[1] : dtStartMatch ? dtStartMatch[1] : null;
+
+      let dueDateObj: Date | null = null;
+      let dueDateStr = getLocalDateString();
+
+      if (rawDateStr && rawDateStr.length >= 8) {
+        const year = parseInt(rawDateStr.substring(0, 4), 10);
+        const month = parseInt(rawDateStr.substring(4, 6), 10) - 1; // Month is 0-indexed
+        const day = parseInt(rawDateStr.substring(6, 8), 10);
+        
+        dueDateObj = new Date(year, month, day);
+        dueDateStr = `${year}-${String(month + 1).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
+      }
+
+      // Skip if the parsed date is before today midnight
+      if (dueDateObj && dueDateObj < today) {
         continue;
       }
 
@@ -87,18 +113,6 @@ export const syncCanvasTasks = async (): Promise<Task[] | null> => {
         .replace(/^([A-Za-z]{2,4}\s*\d{3}[A-Za-z]?):\s*/, '')
         .trim();
 
-      const dtEndMatch = cleanBlock.match(/^DTEND.*?:(\d{8}(?:T\d{6}Z?)?)/m);
-      const dtStartMatch = cleanBlock.match(/^DTSTART.*?:(\d{8}(?:T\d{6}Z?)?)/m);
-      const rawDateStr = dtEndMatch ? dtEndMatch[1] : dtStartMatch ? dtStartMatch[1] : null;
-
-      let dueDateStr = getLocalDateString();
-      if (rawDateStr && rawDateStr.length >= 8) {
-        const year = rawDateStr.substring(0, 4);
-        const month = rawDateStr.substring(4, 6);
-        const day = rawDateStr.substring(6, 8);
-        dueDateStr = `${year}-${month}-${day}`;
-      }
-
       const descMatch = cleanBlock.match(/^DESCRIPTION.*?:(.*)$/m);
       const description = descMatch
         ? descMatch[1].replace(/\\n/g, '\n').replace(/\\/g, '').trim()
@@ -109,7 +123,8 @@ export const syncCanvasTasks = async (): Promise<Task[] | null> => {
         if (descCourseMatch) parsedCourseCode = descCourseMatch[1].trim();
       }
 
-      payload.push({
+      // Inside payload mapping:
+        payload.push({
         user_id: user.id,
         title: cleanTitle || rawSummary,
         description,
@@ -118,10 +133,12 @@ export const syncCanvasTasks = async (): Promise<Task[] | null> => {
         due_date: dueDateStr,
         course_code: parsedCourseCode,
         canvas_event_id: canvasEventId,
+        is_deleted: false,
       });
     }
 
     if (payload.length > 0) {
+      // NOTE: Make sure your DB column name matches 'canvas_event_id'
       const { data: updatedTasks, error } = await supabase
         .from('tasks')
         .upsert(payload, { onConflict: 'canvas_event_id' })

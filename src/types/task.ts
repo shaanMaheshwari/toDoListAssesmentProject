@@ -17,6 +17,7 @@ export interface Task {
   course_code?: string | null;
   canvas_event_id?: string; 
   position: number;
+  is_deleted?: boolean;
 }
 
 export type ViewMode = 'board' | 'calendar';

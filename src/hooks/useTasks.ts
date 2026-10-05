@@ -17,6 +17,7 @@ export function useTasks() {
       .from('tasks')
       .select('*')
       .eq('user_id', user.id)
+      .eq('is_deleted', false) // Filter out soft-deleted tasks
       .order('position', { ascending: true });
 
     if (error) throw error;
@@ -29,12 +30,17 @@ export function useTasks() {
       const updated = await syncCanvasTasks();
       if (updated) {
         setTasks((prevTasks) => {
+          // Keep active board tasks
           const taskMap = new Map(
             prevTasks.map((t) => [t.canvas_event_id || t.id, t])
           );
+
+          // Only merge in synced tasks that aren't soft-deleted
           updated.forEach((task) => {
-            const key = task.canvas_event_id || task.id;
-            taskMap.set(key, task);
+            if (!task.is_deleted) {
+              const key = task.canvas_event_id || task.id;
+              taskMap.set(key, task);
+            }
           });
           return Array.from(taskMap.values());
         });
@@ -131,11 +137,17 @@ export function useTasks() {
   };
 
   const handleDeleteTask = async (taskId: string): Promise<void> => {
+    // Optimistically remove from state
     setTasks((prev) => prev.filter((t) => t.id !== taskId));
-    const { error } = await supabase.from('tasks').delete().eq('id', taskId);
+
+    // Soft delete in database
+    const { error } = await supabase
+      .from('tasks')
+      .update({ is_deleted: true })
+      .eq('id', taskId);
 
     if (error) {
-      console.error('Failed to delete task from Supabase:', error);
+      console.error('Failed to soft delete task from Supabase:', error);
       void fetchTasksFromDB().then(setTasks);
     }
   };
@@ -178,6 +190,7 @@ export function useTasks() {
         due_date: finalDueDate,
         course_code: taskData.course_code || null,
         position: statusTasks.length,
+        is_deleted: false,
         created_at: new Date().toISOString(),
       };
 
@@ -195,6 +208,7 @@ export function useTasks() {
             due_date: finalDueDate,
             course_code: taskData.course_code || null,
             position: statusTasks.length,
+            is_deleted: false,
           },
         ])
         .select();
@@ -211,7 +225,11 @@ export function useTasks() {
     setTasks((prev) => {
       const mergedMap = new Map<string, Task>();
       prev.forEach((t) => mergedMap.set(t.canvas_event_id || t.id, t));
-      importedTasks.forEach((t) => mergedMap.set(t.canvas_event_id || t.id, t));
+      importedTasks.forEach((t) => {
+        if (!t.is_deleted) {
+          mergedMap.set(t.canvas_event_id || t.id, t);
+        }
+      });
       return Array.from(mergedMap.values());
     });
     void fetchTasksFromDB().then(setTasks);
