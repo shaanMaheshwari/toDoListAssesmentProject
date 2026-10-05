@@ -235,7 +235,7 @@ export function useTasks() {
       const newTaskObj: Task = {
         id: tempId,
         user_id: user.id,
-        canvas_event_id: null,
+        canvas_event_id: undefined,
         title: taskData.title || '',
         description: taskData.description || '',
         status: taskData.status || 'todo',
