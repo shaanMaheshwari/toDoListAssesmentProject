@@ -1,27 +1,50 @@
 import { supabase, getOrCreateGuestUser } from '../lib/supabase';
-//import { Task } from '../types/task';
 
 interface ParsedCanvasTask {
   canvas_event_id: string;
   title: string;
   description: string;
-  due_date: string;
+  due_date: string; // YYYY-MM-DD
   course_code: string | null;
 }
 
-function parseICalData(icalText: string): ParsedCanvasTask[] {
+// Format local Date to YYYY-MM-DD
+function getTodayString(): string {
+  const d = new Date();
+  const year = d.getFullYear();
+  const month = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
+}
+
+// Unfold multiline iCal headers
+function unfoldICal(icalText: string): string {
+  return icalText.replace(/\r\n[ \t]/g, '').replace(/\n[ \t]/g, '');
+}
+
+// Safely extract YYYY-MM-DD from any DTEND / DTSTART string
+function extractICalDate(block: string): string | null {
+  const match = block.match(/(?:DTEND|DTSTART)(?:;[^:]*)?:([0-9]{8})/i);
+  if (!match || !match[1]) return null;
+  const raw = match[1];
+  return `${raw.substring(0, 4)}-${raw.substring(4, 6)}-${raw.substring(6, 8)}`;
+}
+
+function parseICalData(icalText: string, todayStr: string): ParsedCanvasTask[] {
   const events: ParsedCanvasTask[] = [];
-  const veventBlocks = icalText.split('BEGIN:VEVENT');
+  const unfoldedText = unfoldICal(icalText);
+  const veventBlocks = unfoldedText.split('BEGIN:VEVENT');
 
   for (let i = 1; i < veventBlocks.length; i++) {
     const block = veventBlocks[i].split('END:VEVENT')[0];
 
-    const uidMatch = block.match(/UID:(.+?)\r?\n/);
+    // 1. UID
+    const uidMatch = block.match(/UID:(.+?)(?:\r?\n|$)/);
     const canvas_event_id = uidMatch ? uidMatch[1].trim() : '';
-
     if (!canvas_event_id) continue;
 
-    const summaryMatch = block.match(/SUMMARY:(.+?)\r?\n/);
+    // 2. Summary & Course Code
+    const summaryMatch = block.match(/SUMMARY:(.+?)(?:\r?\n|$)/);
     let rawSummary = summaryMatch ? summaryMatch[1].trim() : 'Canvas Assignment';
 
     let course_code: string | null = null;
@@ -31,19 +54,16 @@ function parseICalData(icalText: string): ParsedCanvasTask[] {
       rawSummary = rawSummary.replace(/\[.*?\]/, '').trim();
     }
 
-    const descMatch = block.match(/DESCRIPTION:(.+?)\r?\n/);
+    // 3. Description
+    const descMatch = block.match(/DESCRIPTION:(.+?)(?:\r?\n|$)/);
     const description = descMatch ? descMatch[1].trim().replace(/\\n/g, '\n') : '';
 
-    const dtMatch =
-      block.match(/DTEND(?:;VALUE=DATE)?:([0-9T]+Z?)/) ||
-      block.match(/DTSTART(?:;VALUE=DATE)?:([0-9T]+Z?)/);
-    let due_date = new Date().toISOString().split('T')[0];
+    // 4. Due Date
+    const due_date = extractICalDate(block);
 
-    if (dtMatch) {
-      const rawDt = dtMatch[1];
-      if (rawDt.length >= 8) {
-        due_date = `${rawDt.substring(0, 4)}-${rawDt.substring(4, 6)}-${rawDt.substring(6, 8)}`;
-      }
+    // SKIP: No valid date, OR date is before today
+    if (!due_date || due_date < todayStr) {
+      continue;
     }
 
     events.push({
@@ -69,12 +89,25 @@ export async function syncCanvasTasks(): Promise<void> {
     const response = await fetch(feedUrl);
     if (!response.ok) throw new Error(`Failed to fetch feed: ${response.statusText}`);
 
+    const todayStr = getTodayString();
+
+    // STEP 1: Delete all past-due Canvas tasks in Supabase
+    const { error: deleteErr } = await supabase
+      .from('tasks')
+      .delete()
+      .eq('user_id', user.id)
+      .not('canvas_event_id', 'is', null)
+      .lt('due_date', todayStr);
+
+    if (deleteErr) console.error('Error deleting past Canvas tasks:', deleteErr);
+
+    // STEP 2: Parse valid upcoming events
     const icalText = await response.text();
-    const parsedEvents = parseICalData(icalText);
+    const parsedEvents = parseICalData(icalText, todayStr);
 
     if (parsedEvents.length === 0) return;
 
-    // Direct upsert on canvas_event_id
+    // STEP 3: Upsert upcoming tasks cleanly
     const payload = parsedEvents.map((event) => ({
       user_id: user.id,
       canvas_event_id: event.canvas_event_id,
@@ -88,13 +121,13 @@ export async function syncCanvasTasks(): Promise<void> {
       is_deleted: false,
     }));
 
-    const { error } = await supabase.from('tasks').upsert(payload, {
+    const { error: upsertErr } = await supabase.from('tasks').upsert(payload, {
       onConflict: 'canvas_event_id',
-      ignoreDuplicates: true,
+      ignoreDuplicates: false,
     });
 
-    if (error) console.error('Error syncing Canvas tasks:', error);
+    if (upsertErr) console.error('Error upserting Canvas tasks:', upsertErr);
   } catch (err) {
-    console.error('Canvas sync exception:', err);
+    console.error('Canvas sync error:', err);
   }
 }

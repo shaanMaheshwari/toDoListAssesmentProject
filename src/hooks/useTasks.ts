@@ -4,6 +4,16 @@ import { syncCanvasTasks } from '../services/canvasService';
 import { generateTempId, getLocalDateString } from '../utils/dateUtils';
 import type { Task, TaskStatus } from '../types/task';
 
+const SEVEN_DAYS_MS = 7 * 24 * 60 * 60 * 1000;
+
+function shouldSyncCanvas(): boolean {
+  const lastSync = localStorage.getItem('last_canvas_sync_timestamp');
+  if (!lastSync) return true;
+
+  const timePassed = Date.now() - parseInt(lastSync, 10);
+  return timePassed >= SEVEN_DAYS_MS;
+}
+
 export function useTasks() {
   const [tasks, setTasks] = useState<Task[]>([]);
   const [loading, setLoading] = useState<boolean>(true);
@@ -13,29 +23,55 @@ export function useTasks() {
     const user = await getOrCreateGuestUser();
     if (!user) return [];
 
+    const todayStr = getLocalDateString();
+
+    // 1. HARD PURGE past due Canvas tasks directly in DB on fetch
+    await supabase
+      .from('tasks')
+      .delete()
+      .eq('user_id', user.id)
+      .not('canvas_event_id', 'is', null)
+      .lt('due_date', todayStr);
+
+    // 2. Fetch active tasks (only tasks due today or in the future for Canvas tasks)
     const { data, error } = await supabase
       .from('tasks')
       .select('*')
       .eq('user_id', user.id)
-      .eq('is_deleted', false)
       .order('position', { ascending: true });
 
     if (error) throw error;
-    return (data || []) as Task[];
+
+    // Filter out past due Canvas tasks from client state as a second safety layer
+    const activeTasks = ((data || []) as Task[]).filter((t) => {
+      if (t.canvas_event_id && t.due_date && t.due_date < todayStr) {
+        return false;
+      }
+      return true;
+    });
+
+    return activeTasks;
   }, []);
 
-  const triggerCanvasSync = useCallback(async (): Promise<void> => {
-    setIsSyncingCanvas(true);
-    try {
-      await syncCanvasTasks();
-      const refreshedTasks = await fetchTasksFromDB();
-      setTasks(refreshedTasks);
-    } catch (err) {
-      console.error('Error during Canvas sync:', err);
-    } finally {
-      setIsSyncingCanvas(false);
-    }
-  }, [fetchTasksFromDB]);
+  const triggerCanvasSync = useCallback(
+    async (forceSync: boolean = false): Promise<void> => {
+      if (!forceSync && !shouldSyncCanvas()) return;
+
+      setIsSyncingCanvas(true);
+      try {
+        await syncCanvasTasks();
+        localStorage.setItem('last_canvas_sync_timestamp', Date.now().toString());
+
+        const refreshedTasks = await fetchTasksFromDB();
+        setTasks(refreshedTasks);
+      } catch (err) {
+        console.error('Error during Canvas sync:', err);
+      } finally {
+        setIsSyncingCanvas(false);
+      }
+    },
+    [fetchTasksFromDB]
+  );
 
   useEffect(() => {
     let isMounted = true;
@@ -48,14 +84,23 @@ export function useTasks() {
           setLoading(false);
         }
 
-        await syncCanvasTasks();
-        const refreshed = await fetchTasksFromDB();
-        if (isMounted) {
-          setTasks(refreshed);
+        if (shouldSyncCanvas()) {
+          setIsSyncingCanvas(true);
+          await syncCanvasTasks();
+          localStorage.setItem('last_canvas_sync_timestamp', Date.now().toString());
+
+          const refreshed = await fetchTasksFromDB();
+          if (isMounted) {
+            setTasks(refreshed);
+          }
         }
       } catch (err) {
         console.error('Error initializing tasks:', err);
-        if (isMounted) setLoading(false);
+      } finally {
+        if (isMounted) {
+          setLoading(false);
+          setIsSyncingCanvas(false);
+        }
       }
     };
 
@@ -150,11 +195,11 @@ export function useTasks() {
 
     const { error } = await supabase
       .from('tasks')
-      .update({ is_deleted: true })
+      .delete()
       .eq('id', taskId);
 
     if (error) {
-      console.error('Failed to soft delete task from Supabase:', error);
+      console.error('Failed to delete task from Supabase:', error);
       void fetchTasksFromDB().then(setTasks);
     }
   };
@@ -190,6 +235,7 @@ export function useTasks() {
       const newTaskObj: Task = {
         id: tempId,
         user_id: user.id,
+        canvas_event_id: null,
         title: taskData.title || '',
         description: taskData.description || '',
         status: taskData.status || 'todo',
